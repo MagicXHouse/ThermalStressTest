@@ -1,0 +1,59 @@
+CCEffect %{
+  techniques:
+  - name: opaque
+    passes:
+    - vert: vs:vert
+      frag: fs:frag
+      properties:
+        mainColor: { value: [1, 1, 1, 1], linear: true, editor: { type: color } }
+}%
+
+CCProgram vs %{
+  precision highp float;
+  #include <legacy/input>
+  #include <builtin/uniforms/cc-global>
+  #include <legacy/decode-base>
+  #include <legacy/local-batch>
+
+  #if USE_INSTANCING
+    #pragma format(RGBA8)
+    in vec4 a_instanced_color;
+    out vec4 instancedColor;
+  #endif
+
+  vec4 vert () {
+    vec4 position;
+    CCVertInput(position);
+
+    #if USE_INSTANCING
+      instancedColor = a_instanced_color;
+    #endif
+
+    mat4 matWorld;
+    CCGetWorldMatrix(matWorld);
+    return cc_matProj * (cc_matView * matWorld) * position;
+  }
+}%
+
+CCProgram fs %{
+  precision highp float;
+  #include <legacy/output-standard>
+
+  uniform Constant {
+    vec4 mainColor;
+  };
+
+  #if USE_INSTANCING
+    in vec4 instancedColor;
+  #endif
+
+  vec4 frag () {
+    vec4 o = mainColor;
+
+    #if USE_INSTANCING
+      o *= instancedColor;
+    #endif
+
+    return CCFragOutput(o);
+  }
+}%
