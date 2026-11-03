@@ -3,7 +3,8 @@
 // 原因：USE_LOCAL 只有 2D 组件（Sprite/Graphics/Particle2D）会 recompileShaders 打开，
 //      MeshRenderer 永远不会置位它 —— 原 effect 用在 3D 上会丢失世界变换。
 // 保留：additive 混合（blendDst=one，多层叠加累加）+ depthTest off（无 early-z，每层都真跑片元）
-//      + 512 次迭代的纯乘加依赖链（fill-rate / ALU 双敏感），这是"降分辨率收益"的来源。
+//      + 64 次迭代的纯乘加依赖链（fill-rate / ALU 双敏感），这是"降分辨率收益"的来源。
+//      迭代数原为 512，对老旧设备压力过大，已下调到 64；需要更重的单像素成本时改这里的循环上界。
 CCEffect %{
   techniques:
   - name: transparent
@@ -57,8 +58,8 @@ CCProgram heat3d-fs %{
   vec4 frag () {
     vec2 uv = v_uv + vec2(cc_time.x * 0.05, -cc_time.x * 0.03);
 
-    // ALU 依赖链：纯乘加，饱和 ALU 管线（不用 sin/cos）。512 次迭代有意为之，
-    // 每像素成本固定且与分辨率无关 —— 所以片元数（= 像素量）就是 GPU 负载。
+    // ALU 依赖链：纯乘加，饱和 ALU 管线（不用 sin/cos）。64 次迭代有意为之
+    //（原 512 次对老旧设备太重），每像素成本固定且与分辨率无关 —— 所以片元数（= 像素量）就是 GPU 负载。
     float x = fract(uv.x * 127.1 + uv.y * 311.7);
     float y = fract(uv.y * 269.5 + uv.x * 183.3);
     for (int i = 0; i < 64; i++) {

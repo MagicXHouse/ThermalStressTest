@@ -103,7 +103,14 @@ export class SliderBinder extends Component {
     private onSliding() {
         if (this._suppressEvent || !this.slider) return;
 
-        this._value = this.calcValueFromProgress();
+        // 按值短路：程序化同步进度（syncSliderFromValue）或拖回原档位时，值没变就没必要
+        // 走防抖回调、更没必要让上层重建负载。这样即使 slide 事件异步到达、_suppressEvent
+        // 已经过期，也不会误触发一次"值没变"的回调。
+        const next = this.calcValueFromProgress();
+        if (next === this._value) {
+            return;
+        }
+        this._value = next;
         this.refreshLabel();
 
         if (this._debounceTimer !== null) {
@@ -137,6 +144,8 @@ export class SliderBinder extends Component {
         const range = this.max - this.min;
         const progress = range > 0 ? (this._value - this.min) / range : 0;
 
+        // _suppressEvent 只是第一道闸，不再承担正确性：即使这行进度赋值意外触发了 slide，
+        // onSliding 里"值没变就短路"也会兜住。所以这里用 scheduleOnce(0) 复位不再脆弱。
         this._suppressEvent = true;
         this.slider.progress = Math.min(1, Math.max(0, progress));
 
