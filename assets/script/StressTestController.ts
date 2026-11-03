@@ -226,6 +226,8 @@ export class StressTestController extends Component {
     private _csvRows: string[] = [];
     /** 开始采集的时间戳 */
     private _startTimestamp: number = 0;
+    /** 采样开始时刻的目标帧时间预算（ms），固定不随温控降帧漂移，用于 drop_rate/jank 判定 */
+    private _baseBudgetMs: number = 1000 / 60;
     /** FSR 升采样材质是否就绪 */
     private _fsrReady: boolean = false;
     /** 最近一个完整窗口的平均 fps，给 getStatus 用 */
@@ -1228,7 +1230,10 @@ export class StressTestController extends Component {
         this._windowFrames.length = 0;
         this._csvRows.length = 0;
         this._csvRows.push(CSV_HEADER);
-        console.log('[StressTest] frame-time sampling started (1 row / 5s, writeCsv=' + this.writeCsv + ')');
+        // 固定基准预算：drop_rate / jank 判定用采样开始时的目标帧率，不跟随温控降帧后实时 game.frameRate 漂移，
+        // 否则"温控前后"两段数据的掉帧率/卡顿次数不可比（阈值会从 16.667ms 漂到 33.33ms）。
+        this._baseBudgetMs = 1000 / (Number(game.frameRate) || 60);
+        console.log('[StressTest] frame-time sampling started (1 row / 5s, baseBudget=' + this._baseBudgetMs.toFixed(2) + 'ms, writeCsv=' + this.writeCsv + ')');
     }
 
     /** 停止采集（已采集的行保留，仍可 exportCsv） */
@@ -1293,6 +1298,7 @@ export class StressTestController extends Component {
 
     /**
      * 把当前 5 秒窗口的统计压成一行 CSV。
+     * drop_rate / jank 的判定预算固定为采样开始时的 _baseBudgetMs（不随温控降帧漂移，保证"温控前后"可比）。
      * 注意 fps_std 用的是"逐帧 FPS 的标准差"，不是帧时间的标准差；drop_rate 在满帧时因 vsync 抖动
      * 会虚高到 60% 左右，判卡顿请优先看 jank_gt_2x / ft_p95 / ft_max。
      */
@@ -1312,7 +1318,7 @@ export class StressTestController extends Component {
         this._updateDrsLabel();     // 屏幕档位数字每 5 秒跟着刷新一次
         const sorted = frames.slice().sort((a, b) => a - b);
         const p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))];
-        const budget = 1000 / (Number(game.frameRate) || 60);
+        const budget = this._baseBudgetMs;
         const budget2x = budget * 2;
         let jank = 0;
         let drop = 0;
