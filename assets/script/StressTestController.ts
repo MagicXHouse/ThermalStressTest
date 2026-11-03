@@ -143,6 +143,17 @@ export class StressTestController extends Component {
     @property({ tooltip: '温控预热时长（秒），会传给 thermal.warmupSeconds；同时作为"延后开始采样"的时长，避免预热期污染 baseline' })
     public thermalWarmupSeconds: number = 20;
 
+    // ---- 试探式自动升档 ----
+
+    @property({ tooltip: '是否启用试探式自动升档；false = 只降不升' })
+    public enableAutoUpgrade: boolean = false;
+
+    @property({ tooltip: '降档后到第一次自动试探升档的静默期（秒）' })
+    public probeIntervalSeconds: number = 60;
+
+    @property({ tooltip: '升档后观察多久判定成败（秒）；成功则立即继续下一档' })
+    public recoveryProbeSeconds: number = 15;
+
     // ==================== 场景 B：CPU 负载（立方体，数量 0 时完全不影响场景 A） ====================
 
     @property(Prefab)
@@ -1123,7 +1134,8 @@ export class StressTestController extends Component {
     /**
      * 开启温控。杠杆顺序（引擎行为）：
      *   降档：先 shadingScale（场景 A 要验证的杠杆），scale 到地板后才降帧率；
-     *   升档：先帧率，再分辨率（与降档相反）。
+     *   自动试探升档（enableAutoUpgrade=true）：先分辨率，scale 升满后再升帧率；
+     *   手动 stepUp()：先帧率，再分辨率。
      * 触发条件：20s 滑动窗口的平均帧时间 ≥ 预算 × (1 + triggerPercent%)；
      * 另外前 thermalWarmupSeconds 秒是预热期，不会动作也不计入 CSV。
      */
@@ -1133,6 +1145,9 @@ export class StressTestController extends Component {
             triggerPercent: this.thermalTriggerPercent,
             minScale: this.thermalMinScale,
             warmupSeconds: this.thermalWarmupSeconds,
+            enableAutoUpgrade: this.enableAutoUpgrade,
+            probeIntervalSeconds: this.probeIntervalSeconds,
+            recoveryProbeSeconds: this.recoveryProbeSeconds,
             enableScale: true,
             enableFsr: false,
         };
