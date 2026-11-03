@@ -327,6 +327,10 @@
     "planeDistance": 15,
     "coverageMargin": 0.04,
     "cameraNode": null,
+    "autoToggleDrs": true,
+    "drsToggleInterval": 10,
+    "drsLowScale": 0.3,
+    "drsLabel": null,
     "particleNode": null,
     "particleRate": -1,
     "thermalMinFrameRate": 30,
@@ -2218,7 +2222,7 @@
       "__id__": 1
     },
     "_children": [],
-    "_active": true,
+    "_active": false,
     "_components": [
       {
         "__id__": 57

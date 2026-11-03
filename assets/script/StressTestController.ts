@@ -1,6 +1,6 @@
 import {
     _decorator, Component, Node, Prefab, instantiate, profiler, Enum,
-    Toggle, Vec3, Vec4, Quat, Color, MeshRenderer, ParticleSystem, Camera, Canvas, Layers,
+    Toggle, Label, Vec3, Vec4, Quat, Color, MeshRenderer, ParticleSystem, Camera, Canvas, Layers,
     director, screen, game, thermal, cclegacy, Material, resources,
 } from 'cc';
 import { SliderBinder } from './SliderBinder';
@@ -107,6 +107,20 @@ export class StressTestController extends Component {
     @property({ type: Node, tooltip: '3D 相机节点：留空则自动挑透视相机（Main Camera）' })
     public cameraNode: Node | null = null;
 
+    // ==================== DRS 自动切换（验证"降分辨率到底回不回帧"） ====================
+
+    @property({ tooltip: '每 N 秒自动切一次"降分辨率(+FSR)"，用来看帧率是否真的回升。验收跑长测时记得关掉' })
+    public autoToggleDrs: boolean = true;
+
+    @property({ tooltip: '切换间隔（秒）。DRS 开 10s → 关 10s → 循环' })
+    public drsToggleInterval: number = 10;
+
+    @property({ range: [0.3, 1, 0.05], slide: true, tooltip: 'DRS 打开时用的 shadingScale（1 = 不降）。0.3 ≈ 9% 像素，画面会明显糊，帧率差也最直观' })
+    public drsLowScale: number = 0.3;
+
+    @property({ type: Label, tooltip: '（可选）屏幕上的档位显示：挂一个 Label，会实时显示 shadingScale 和 fps，一眼看出当前哪一档' })
+    public drsLabel: Label | null = null;
+
     // ==================== 次要负载：粒子 ====================
 
     @property({ type: Node, tooltip: 'Particle 节点，留空按名字自动找' })
@@ -191,6 +205,14 @@ export class StressTestController extends Component {
     /** Pressure 模式算出的压力值 0~1 */
     private _pressureP: number = 0;
 
+    // ---- DRS 自动切换 ----
+    /** 当前是否处于"降分辨率"状态 */
+    private _drsOn: boolean = false;
+    /** 当前实际写进 pipeline 的 shadingScale（用来打 1.00 → 0.30 这种切换日志） */
+    private _drsScale: number = 1.0;
+    /** 循环回调的稳定引用（unschedule 必须用同一个函数） */
+    private _drsTick: (() => void) | null = null;
+
     // ---- 帧时间自采 ----
     /** 是否正在采集 */
     private _sampling: boolean = false;
@@ -258,14 +280,16 @@ export class StressTestController extends Component {
                 this.cleanOldCsv();
                 this.schedule(() => this._autoExport(), 60);
             }
+            // A/B 验证：每 N 秒切一次 DRS（默认开，验收长测时关掉）
+            if (this.autoToggleDrs) this.startDrsToggle();
         });
 
         (globalThis as any).stressTest = this;
         console.log('[StressTest] attached to globalThis.stressTest');
         console.log('  A/GPU: setHeatPlaneCount(1~8) 改叠层数 | setPlaneCoverage(0~1) 改单层面积 | setParticleRate(n)');
         console.log('  B/CPU: setSpawnCount(n) | setCpuWork(0~2000) | setColorEnabled(true|false)');
-        console.log('  drs  : setScale(1|0.85|0.7|0.3) | thermalOn() | thermalOff() | thermalDown() | thermalUp() | setTriggerPercent(10)');
-        console.log('  data : exportCsv() | printCsv(n) | getStatus() | logStatus()');
+        console.log('  drs  : startDrsToggle() | stopDrsToggle() | setScale(1|0.85|0.7|0.3) | thermalOn() | thermalOff()');
+        console.log('  diag : diagFsr() | diagPlane() | getStatus() | logStatus() | exportCsv() | printCsv(n)');
     }
 
     /**
@@ -588,6 +612,78 @@ export class StressTestController extends Component {
     }
 
     /**
+     * 诊断 FSR 链路（custom pipeline 探针）：一次性把"降分辨率 + FSR 到底走哪条链路"的关键状态
+     * 全打出来。用来回答：thermal 写的 pipeline.shadingScale，和 custom pipeline 的 PostProcess/FSR
+     * 组件之间有没有联动、FSR 会不会真的升采样。
+     * 用法：编辑器预览里执行 `stressTest.diagFsr()`，把打印结果贴给督工。
+     */
+    public diagFsr() {
+        const out: any = {};
+
+        // ① 当前管线类型
+        const root: any = (director as any).root;
+        const pipeline: any = root ? root.pipeline : null;
+        out.pipelineClass = pipeline ? (pipeline.constructor ? pipeline.constructor.name : 'unknown') : 'null';
+        out.pipelineShadingScale = pipeline ? Number((pipeline.shadingScale || 1).toFixed(3)) : 'n/a';
+
+        // ② 3D 相机及其 usePostProcess 状态
+        const cam = this._findCamera();
+        out.cameraName = cam ? cam.node.name : 'null';
+        out.cameraUsePostProcess = cam ? !!(cam as any).usePostProcess : 'n/a';
+
+        // ③ PostProcess 组件（custom pipeline 的 FSR 必须挂在它上面）
+        const ppNode = cam ? cam.node : null;
+        const pp: any = ppNode ? ppNode.getComponent('cc.PostProcess') : null;
+        out.hasPostProcess = !!pp;
+        if (pp) {
+            out.postProcessShadingScale = Number((pp.shadingScale || 1).toFixed(3));
+            out.postProcessGlobal = !!pp.global;
+            out.postProcessEnabled = pp.enabledInHierarchy;
+            // FSR 是 PostProcessSetting 子类，onEnable 时会把自己 addSetting 进这个 Map。
+            // 组件挂上了但这里是 0，说明 FSR 没注册进 PostProcess，pass 不会执行。
+            out.postProcessSettingsCount = pp.settings ? pp.settings.size : 'n/a';
+        }
+
+        // ④ FSR 组件（PostProcessSetting 子类，requireComponent(PostProcess)，同节点）
+        const fsr: any = ppNode ? ppNode.getComponent('cc.FSR') : null;
+        out.hasFSR = !!fsr;
+        if (fsr) {
+            out.fsrSharpness = Number((fsr.sharpness || 0).toFixed(3));
+            out.fsrEnabled = fsr.enabledInHierarchy;
+        }
+
+        // ⑤ render-scene camera 上的 postProcess 字段（post-process-builder 读的是它）
+        if (cam) {
+            const rc: any = (cam as any).camera;
+            out.renderCameraPostProcess = rc && rc.postProcess
+                ? 'set(' + (rc.postProcess.constructor ? rc.postProcess.constructor.name : 'unknown') + ')'
+                : 'null';
+            out.renderCameraUsePostProcess = rc ? !!rc.usePostProcess : 'n/a';
+        }
+
+        // ⑥ PostProcess.all 静态数组（global PP 探测）
+        try {
+            const ccAny: any = cclegacy;
+            const PPCls: any = ccAny && ccAny.PostProcess;
+            if (PPCls && Array.isArray(PPCls.all)) {
+                out.postProcessAllCount = PPCls.all.length;
+                out.postProcessAll = PPCls.all.map((p: any) => ({
+                    global: !!p.global,
+                    enabled: p.enabledInHierarchy,
+                    node: p.node ? p.node.name : 'null',
+                }));
+            } else {
+                out.postProcessAll = 'cc.PostProcess 类型不可达（可能未导出或未挂载）';
+            }
+        } catch (e) {
+            out.postProcessAllError = String(e);
+        }
+
+        console.log('[StressTest][diagFsr]\n' + JSON.stringify(out, null, 2));
+        return out;
+    }
+
+    /**
      * "GPU 负载"滑块：控制**叠加层数**（0~8），不改平面大小。
      * 每层都是铺满全屏的同一张 512 次迭代 shader，depthTest 关闭 → 逐层累加片元成本，
      * 所以总负载 ≈ 层数 × 全屏像素，而画面构图完全不变。
@@ -892,6 +988,7 @@ export class StressTestController extends Component {
         console.log('[StressTest] shadingScale = ' + scale.toFixed(2)
             + ' (readback ' + (pipeline ? pipeline.shadingScale.toFixed(2) : 'N/A')
             + '), FSR=' + (this._fsrReady ? 'READY' : 'PENDING'));
+        this._updateDrsLabel();
     }
 
     /** 打一行当前状态（真机控制台里最常用的自查手段） */
@@ -901,11 +998,86 @@ export class StressTestController extends Component {
         return s;
     }
 
+    // ==================== DRS 自动切换（A/B 验证用） ====================
+
+    /**
+     * 启动"每 N 秒切一次 DRS"的循环：先跑 10 秒满分辨率做基线，再切到低分辨率 10 秒，如此循环。
+     * 每次切换都会打印**上一窗口**的实测 fps，所以控制台里能直接读出两档的差值；
+     * CSV 的 shading_scale 列也会变成 1.00 / 0.30 的方波，事后画图就能对齐。
+     *
+     * 关于 FSR：4.0 里 FSR 是 post-process（PostProcess/FSR），而 thermal 的 FSR 钩子写的是
+     * camera.pipelineSettings.fsr —— 这个字段在当前引擎里没有读取方，调 setFsrEnabled 只会每 10 秒
+     * 刷一条 "BuiltinPipelineSettings is unavailable" 警告。所以这里只切 shadingScale，
+     * 测出来的是**纯降分辨率**的收益（这也是影响帧率的主体）。
+     */
+    public startDrsToggle(): void {
+        this.stopDrsToggle();
+        this._drsOn = false;
+        this._drsScale = 1.0;
+        this._applyDrs(false);                       // 从"不降"开始，先拿基线
+        this._drsTick = () => this._applyDrs(!this._drsOn);
+        this.schedule(this._drsTick, Math.max(1, this.drsToggleInterval));
+        console.log('[StressTest] DRS 循环启动：shadingScale 在 1.00 和 ' + this.drsLowScale.toFixed(2)
+            + ' 之间切换，每 ' + this.drsToggleInterval + 's 一次（stopDrsToggle() 停止）');
+        if (!this.drsLabel) {
+            console.log('[StressTest] 想看屏幕上的档位数字就把一个 Label 拖到 Drs Label 槽');
+        }
+        console.log('[StressTest] 注：FSR 不参与切换（4.0 的 FSR 是 post-process，thermal 的钩子在当前引擎是空转），'
+            + '所以这是纯 shadingScale 的 A/B');
+        if (this.enableThermalControl) {
+            console.warn('[StressTest] 温控也会写 shadingScale，会和这个循环抢；做 A/B 时请把 enableThermalControl 关掉');
+        }
+    }
+
+    /** 停止 DRS 循环，并把分辨率还原到 1.0 */
+    public stopDrsToggle(): void {
+        if (!this._drsTick) return;
+        this.unschedule(this._drsTick);
+        this._drsTick = null;
+        if (this._drsScale < 1) {
+            this.setScale(1.0);
+            this._drsScale = 1.0;
+            this._updateDrsLabel();
+        }
+        console.log('[StressTest] DRS 循环已停止，shadingScale 还原 1.00');
+    }
+
+    /**
+     * 切一次 DRS：on → drsLowScale（默认 0.30），off → 1.00。
+     * 日志直接写成 "1.00 → 0.30" 的形式，并带上**上一档**的实测 fps，
+     * 所以只要看下面两行交替出现，就说明切换生效了：
+     *   DRS 1.00 → 0.30 | 上一档实测 38.5fps (ft=25.97ms)
+     *   DRS 0.30 → 1.00 | 上一档实测 58.4fps (ft=17.12ms)
+     */
+    private _applyDrs(on: boolean): void {
+        this._drsOn = on;
+        const from = this._drsScale;
+        const to = on ? this.drsLowScale : 1.0;
+        this._drsScale = to;
+
+        this.setScale(to);
+
+        const fps = this._lastFps;
+        const ft = fps > 0 ? (1000 / fps) : 0;
+        console.log('[StressTest] DRS ' + from.toFixed(2) + ' → ' + to.toFixed(2)
+            + (fps > 0 ? ' | 上一档实测 ' + fps.toFixed(1) + 'fps (ft=' + ft.toFixed(2) + 'ms)' : ' | 测基线中…'));
+        this._updateDrsLabel();
+    }
+
+    /** 屏幕上的档位显示：直接读 pipeline 的实际 shadingScale + 最近窗口 fps，所以温控改档时也是真的 */
+    private _updateDrsLabel(): void {
+        if (!this.drsLabel) return;
+        const pipeline = (director as any).root?.pipeline;
+        const scale = pipeline ? Number(pipeline.shadingScale) : this._drsScale;
+        const fps = this._lastFps;
+        this.drsLabel.string = 'shadingScale ' + scale.toFixed(2)
+            + (fps > 0 ? '   ' + fps.toFixed(1) + ' fps' : '');
+    }
+
     // ==================== FSR (builtin pipeline) ====================
 
     /**
-     * 加载 FSR 升采样材质并交给 thermal 模块。
-     * 必须等它完成再开温控，否则第一次降分辨率是"糊着降"（没有升采样，看不出画质差异但帧率收益照旧）。
+     * 一期纯降分辨率，不启用 FSR。此方法仅加载材质占位，二期启用 FSR 时再挂接。
      */
     private _initFsr(done: () => void) {
         if (typeof (thermal as any).setFsrMaterial !== 'function') {
@@ -921,7 +1093,7 @@ export class StressTestController extends Component {
             }
             (thermal as any).setFsrMaterial(material);
             this._fsrReady = true;
-            console.log('[StressTest] FSR material ready: ' + material.name);
+            console.log('[StressTest] FSR material loaded (phase-1 unused, pure downsampling): ' + material.name);
             done();
         });
     }
@@ -940,7 +1112,7 @@ export class StressTestController extends Component {
             triggerPercent: this.thermalTriggerPercent,
             minScale: this.thermalMinScale,
             enableScale: true,
-            enableFsr: true,
+            enableFsr: false,
         };
         thermal.enable(cfg);
         thermal.onLevelChange((level) => {
@@ -1137,6 +1309,7 @@ export class StressTestController extends Component {
         const avg = sum / n;
         const fps = 1000 / avg;
         this._lastFps = fps;
+        this._updateDrsLabel();     // 屏幕档位数字每 5 秒跟着刷新一次
         const sorted = frames.slice().sort((a, b) => a - b);
         const p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))];
         const budget = 1000 / (Number(game.frameRate) || 60);
