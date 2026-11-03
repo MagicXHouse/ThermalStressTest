@@ -61,7 +61,7 @@ CCProgram heat3d-fs %{
     // 每像素成本固定且与分辨率无关 —— 所以片元数（= 像素量）就是 GPU 负载。
     float x = fract(uv.x * 127.1 + uv.y * 311.7);
     float y = fract(uv.y * 269.5 + uv.x * 183.3);
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 64; i++) {
       x = fract(x * 1.61803 + y * 0.75488 + 0.12345);
       y = fract(y * 1.61803 + x * 0.75488 + 0.54321);
     }
