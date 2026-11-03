@@ -1,0 +1,88 @@
+# ThermalStressTest
+
+微信小游戏「软温控」一期的压测项目。目的：制造可控的 GPU / CPU 负载，验证温控模块（引擎侧 `cocos/thermal`）降载是否有效——**降分辨率能降 GPU 负载、降帧率能降 CPU 负载、设备温度下降**。
+
+> 对应方案文档：`D:\data\笔记\温控\4、一期方案.md`（温控一期）。
+
+## 一、双滑块 = 两类负载
+
+单场景内靠两个 Slider 分别压 GPU 和 CPU，**不需要拆两个场景**：
+
+| Slider | 控制项 | 压什么 | 对应场景 |
+|---|---|---|---|
+| GPU 层数 | `heatPlaneCount`（0~8） | 满屏 3D 平面层数，每层跑 512 次迭代的片元 shader（fill-rate / ALU） | 场景 A（GPU） |
+| 立方体数量 | `spawnCount`（0~2000） | 每帧遍历 N 个立方体做自转/公转（脚本计算 + 世界矩阵更新） | 场景 B（CPU） |
+
+**关键约定**：`spawnCount = 0` 时是场景 A（纯 GPU，`update()` 里零遍历）；`spawnCount > 0` 时是场景 B（CPU 负载）。两套场景共用同一个 `StressTestController`。
+
+## 二、场景 A 的关键设计（红线）
+
+- GPU 压测点是场景根节点下的 **3D 平面**（`HeatPlane`，MeshRenderer + Quad），材质 `Mat_HeatShader3D`。
+- 片元 shader（`HeatShader3D.effect`）是 512 次迭代纯乘加依赖链 + additive 混合 + depthTest off，每层都铺满全屏 → 负载 ≈ 层数 × 像素量。
+- **必须挂在 3D 相机渲染目标上**：`shadingScale`（降分辨率）只缩放 3D 相机，不缩放 Canvas(UI_2D)。挂在 Canvas 下的 2D Sprite 不吃降分辨率，测不出收益。
+- 场景 A 的 `update()` 里不能有遍历/矩阵运算——由 `spawnCount = 0` 保证（`currentObjects` 为空，动画循环一次都不进）。
+
+## 三、温控开关与验证入口
+
+- 代码开关：`enableThermalControl` 属性（勾选 = 开温控）。构建两个包做 A/B 对比（开/关温控）。
+- 降档顺序：先降 `shadingScale`（场景 A 要验证的杠杆），到底后再降帧率 `game.frameRate`。
+- **一期不做 FSR**：custom pipeline 的 FSR 依赖官方已废弃模块，降档就是纯降采样，FSR 留二期。
+
+### 控制台入口（运行时挂 `globalThis.stressTest`）
+
+```
+A/GPU : setHeatPlaneCount(1~8) | setPlaneCoverage(0~1) | setParticleRate(n)
+B/CPU : setSpawnCount(n) | setCpuWork(0~2000) | setColorEnabled(true|false)
+drs   : setScale(1|0.85|0.7|0.3) | thermalOn() | thermalOff() | thermalDown() | thermalUp()
+        startDrsToggle() | stopDrsToggle() | setTriggerPercent(10)
+diag  : diagPlane() | diagFsr() | getStatus() | logStatus() | exportCsv() | printCsv(n)
+```
+
+## 四、数据采集（CSV）
+
+每 5 秒一行，与 adb 温度采样对齐。表头（列名顺序保持兼容，分析脚本依赖）：
+
+```
+elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jank_gt_2x,battery_pct,
+load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate
+```
+
+| 字段 | 含义 |
+|---|---|
+| `fps` | 窗口平均帧率 = 1000 / ft_avg_ms |
+| `ft_p95_ms` / `ft_max_ms` | 95 分位 / 最慢一帧的帧时间 |
+| `jank_gt_2x` | 超过 2 倍预算（>33.3ms）的帧数，判真卡顿 |
+| `fps_std` | 窗口内逐帧 FPS 标准差（抖动） |
+| `drop_rate` | 帧时间 > 预算（16.667ms）的帧占比 % |
+| `load_gpu_layers` | 实际参与压测的平面层数（历史列名，场景 A 用） |
+| `shading_scale` / `frame_rate` | 当前 DRS 档 / 帧率档 |
+
+CSV 通过 `wx.env.USER_DATA_PATH/thermal_<时间戳>.csv` 写入小游戏沙箱，每 60s 自动导出一次；`exportCsv()` 手动导出，`printCsv(n)` 在控制台直接打印最近 n 行。
+
+## 五、温度采集（宿主机侧）
+
+微信运行时拿不到温度，测试验证时在宿主机采集设备电池温度作为 ground truth：
+
+- Android：`monitor_temp.bat`（`adb dumpsys battery`，每 5s 一行 `Time,Temperature`）
+- iOS：`monitor_temp_ios.ps1`（libimobiledevice / pymobiledevice3）
+
+分析脚本：`D:\proj\cocos\cocos4\_eval_thermal.py`，读性能 CSV + 温度 CSV，按方案 4.5 合入标准输出达标结论（温度下降 / 掉帧率下降 / 帧率标准差下降）。
+
+## 六、目录结构
+
+```
+assets/
+  scene.scene                     # 主场景（单场景双滑块）
+  script/StressTestController.ts  # 压测控制器（核心）
+  script/SliderBinder.ts          # Slider 绑定封装
+  prefab/Cube.prefab              # 场景 B 的 instanced 立方体
+  shader/HeatShader3D.effect      # 场景 A 的满屏 512 迭代片元 shader
+  shader/InstancedColor.effect    # 场景 B 的 instanced 颜色 shader
+  material/Mat_HeatShader3D.mtl   # HeatPlane 材质
+  material/Mat_InstancedColor.mtl # Cube 材质
+  resources/fsr/builtin-fsr.mtl   # FSR 材质（一期未启用，占位）
+```
+
+## 七、构建
+
+微信小游戏构建时需启用引擎的 `thermal` feature（独立 feature，不可加入 base）。开/关温控通过 `enableThermalControl` 属性区分，构建两次得到 baseline / 温控两个包。
