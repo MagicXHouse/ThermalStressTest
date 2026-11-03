@@ -1,18 +1,132 @@
 import {
-    _decorator, Component, Node, Prefab, instantiate, profiler,
-    Toggle, Vec3, MeshRenderer, director, screen, game, thermal, cclegacy,
-    Material, resources,
+    _decorator, Component, Node, Prefab, instantiate, profiler, Enum,
+    Toggle, Vec3, Vec4, Quat, Color, MeshRenderer, ParticleSystem, Camera, Canvas, Layers,
+    director, screen, game, thermal, cclegacy, Material, resources,
 } from 'cc';
 import { SliderBinder } from './SliderBinder';
 const { ccclass, property } = _decorator;
 
-// load_gpu_layers: 实际写入 HeatLayer 节点数（历史列名，保持 CSV 兼容）
-const CSV_HEADER = 'elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jank_gt_2x,battery_pct,load_gpu_layers,spawn_count,shading_scale,frame_rate';
+/** HeatPlane 的着色依据 */
+enum TintMode {
+    /** 按层数（默认）：1 层蓝 → 8 层红。用于确认 GPU 负载滑块真的生效了 */
+    Load = 0,
+    /** 按实测帧时间：预算内蓝，超预算压力Range 红。用于观察温控降分辨率是否真的把压力降下来 */
+    Pressure = 1,
+    /** 不接管颜色，用材质里手调的颜色 */
+    Off = 2,
+}
+
+/**
+ * 温控压测控制器：一个场景，两套压测，靠 spawnCount 切换。
+ *
+ * ── 场景 A（spawnCount = 0）—— 纯 GPU，验证"降分辨率(DRS)"的收益 ──────────────
+ *   负载全部来自 3D 相机渲染目标上的一块（或多块叠加的）满屏平面，
+ *   片元着色器是 512 次迭代的纯乘加依赖链，所以成本 ≈ 层数 × 像素量。
+ *   update() 里只有帧时间采样，currentObjects 为空 → 立方体动画一次都不进。
+ *   GPU 负载滑块 = 叠加层数（0 = 关闭，1~8 = 几层全屏），颜色随层数蓝→红。
+ *
+ * ── 场景 B（spawnCount > 0）—— CPU 负载 ────────────────────────────────────
+ *   每帧遍历 N 个立方体做自转/公转（+可选改实例颜色），O(N)。
+ *   立方体数量或 cpuWorkPerCube 都能把 CPU 压过 16.7ms 预算。
+ *
+ * ── 三条红线 ──────────────────────────────────────────────────────────────
+ * 1. 场景 A 的 GPU 压测点必须由 3D 相机渲染：MeshRenderer / ParticleSystem，且不在 Canvas 下
+ *    —— shadingScale 只缩放 3D 相机，Canvas(UI_2D) 走独立通道、按原生分辨率渲染。
+ * 2. 场景 A 的 update() 不能有遍历/矩阵运算。这条由 spawnCount=0 保证；一旦开了立方体就是场景 B，
+ *    那组数据不能再用来论证 GPU / DRS 收益。
+ * 3. 场景 A 的负载必须重到能触发温控降档（60fps 目标下 avg ≥ 18.3ms，即 fps ≤ 54.5），
+ *    否则温控永远不动，等于白测。
+ *
+ * ── 常用控制台入口（运行时挂在 globalThis.stressTest 上）────────────────────
+ *   GPU: setHeatPlaneCount(0~8) / setPlaneCoverage(0.05~1) / setParticleRate(n)
+ *   CPU: setSpawnCount(n) / setCpuWork(0~2000) / setColorEnabled(bool)
+ *   DRS: setScale(1|0.85|0.7|0.3) / thermalOn() / thermalOff() / thermalDown() / thermalUp()
+ *   数据: exportCsv() / printCsv(n) / getStatus() / logStatus() / tintInfo()
+ */
+
+/** CSV 表头：列名与顺序保持历史兼容，不要改（已有分析脚本依赖它） */
+// elapsed_s     从 startLogging 起算的秒数（每行覆盖 5 秒窗口）
+// ts_ms         performance.now() 绝对时间戳，跟 adb 温度采样对齐用
+// fps           窗口平均帧率 = 1000 / ft_avg_ms
+// ft_avg_ms     窗口平均帧时间（核心指标）
+// ft_p95_ms     95 分位帧时间
+// ft_max_ms     窗口内最慢一帧
+// jank_gt_2x    超过 2 倍预算（>33.3ms）的帧数，判"真卡顿"用这列
+// battery_pct   电量百分比（wx.getBatteryInfoSync，非微信环境为 NA）
+// load_gpu_layers 实际参与压测的平面层数（历史列名，场景 A 专用）
+// spawn_count   立方体数量（场景 B 用）
+// shading_scale 当前 DRS 缩放档（温控降过档会变 0.85/0.7/0.3）
+// frame_rate    game.frameRate 帧率档位（不是实测 fps）
+// fps_std       窗口内逐帧 FPS 的标准差 = 抖动
+// drop_rate     超过预算（16.667ms）的帧占比 %；满帧时因 vsync 抖动会恒在 60% 左右，参考价值低
+const CSV_HEADER = 'elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jank_gt_2x,battery_pct,load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate';
+
+/** 单块平面的网格尺寸（局部空间全长），用于把平面缩放到刚好铺满相机视野 */
+interface PlaneExtents { x: number; y: number; z: number; }
 
 @ccclass('StressTestController')
 export class StressTestController extends Component {
 
-    // ============ 基础配置 ============
+    // ==================== 通用开关 ====================
+
+    @property({ tooltip: '代码温控开关：勾选=开温控，不勾=关温控（构建两个包做 A/B 对比）' })
+    public enableThermalControl: boolean = false;
+
+    @property({ tooltip: '是否把 CSV 结果写入手机文件' })
+    public writeCsv: boolean = true;
+
+    @property({ tooltip: '左下角显示 profiler（fps/drawcall/tris），CPU 成本可忽略，调参时很有用' })
+    public showProfiler: boolean = true;
+
+    // ==================== 场景 A 主负载：3D 满屏平面 ====================
+
+    @property({ type: Node, tooltip: '满屏平面模板（场景根节点下的 MeshRenderer，建议命名 HeatPlane；留空按名字自动找）' })
+    public heatPlane: Node | null = null;
+
+    @property({ range: [0, 8, 1], slide: true, tooltip: '平面层数：0 = 完全关掉 GPU 负载（平面隐藏、副本销毁）；N 层 ≈ N 倍全屏片元成本' })
+    public heatPlaneCount: number = 1;
+
+    @property({ range: [0.05, 1, 0.05], slide: true, tooltip: '单层覆盖比例（边长比，1=铺满全屏）。GPU 主旋钮是层数；这个留给"1 层都太重"时在 1 层之下做细调，像素 ∝ 比例²' })
+    public planeCoverage: number = 1.0;
+
+    @property({ type: Enum(TintMode), tooltip: '平面着色依据：Load=按层数(1层蓝→8层红，滑块反馈) / Pressure=按实测帧时间 / Off=不接管' })
+    public tintMode: TintMode = TintMode.Load;
+
+    @property({ range: [0.05, 1, 0.05], slide: true, tooltip: 'Pressure 模式灵敏度：帧时间超出预算多少比例算"全红"。0.4 = 超 40%' })
+    public pressureRange: number = 0.4;
+
+    @property({ tooltip: '由脚本把平面摆到相机正前方并缩放到铺满视野（推荐；关掉就完全用编辑器里手调的位置/缩放）' })
+    public autoFitToCamera: boolean = true;
+
+    @property({ tooltip: '自动摆位时平面到相机的距离（世界单位），需落在 near/far 之间' })
+    public planeDistance: number = 15;
+
+    @property({ range: [0, 0.5, 0.02], slide: true, tooltip: '自动摆位的边缘余量，避免降分辨率/FSR 后边缘露底' })
+    public coverageMargin: number = 0.04;
+
+    @property({ type: Node, tooltip: '3D 相机节点：留空则自动挑透视相机（Main Camera）' })
+    public cameraNode: Node | null = null;
+
+    // ==================== 次要负载：粒子 ====================
+
+    @property({ type: Node, tooltip: 'Particle 节点，留空按名字自动找' })
+    public particleNode: Node | null = null;
+
+    @property({ tooltip: '粒子发射速率（个/秒）；<0 表示不改动画布上调好的值' })
+    public particleRate: number = -1;
+
+    // ==================== 温控参数 ====================
+
+    @property({ tooltip: '降档后允许的最低帧率' })
+    public thermalMinFrameRate: number = 30;
+
+    @property({ tooltip: '降档触发阈值(%)：60fps 目标下 10% ⇒ 实测低于 54.5fps 才降档' })
+    public thermalTriggerPercent: number = 10;
+
+    @property({ tooltip: '分辨率地板：档位为 1.0 / 0.85 / 0.7 / 本值' })
+    public thermalMinScale: number = 0.3;
+
+    // ==================== 场景 B：CPU 负载（立方体，数量 0 时完全不影响场景 A） ====================
 
     @property(Prefab)
     public testObjectPrefab: Prefab | null = null;
@@ -20,38 +134,25 @@ export class StressTestController extends Component {
     @property({ tooltip: '生成半径' })
     public spawnRadius: number = 20;
 
-    @property({ tooltip: '是否把 CSV 结果写入手机文件' })
-    public writeCsv: boolean = true;
-
-    @property({ tooltip: '是否开启温控（代码开关）：勾选=开温控，不勾=关温控' })
-    public enableThermalControl: boolean = false;
-
-    @property({ tooltip: '初始生成数量' })
-    public spawnCount: number = 500;
-
-    // ============ 动画参数（CPU 侧）============
+    @property({ tooltip: '立方体数量：0 = 场景 A（纯 GPU，每帧零遍历）；>0 = 场景 B（CPU 负载，每帧 O(N) 遍历）' })
+    public spawnCount: number = 0;
 
     @property({ tooltip: '自转速度（度/秒）' })
     public rotationSpeed: number = 90;
 
-    @property({ tooltip: '上下浮动幅度' })
-    public floatAmplitude: number = 2;
-
-    @property({ tooltip: '浮动频率' })
-    public floatFrequency: number = 1;
-
     @property({ tooltip: '绕中心公转速度（度/秒）' })
     public orbitSpeed: number = 10;
 
-    // ============ GPU Instancing 颜色变换 ============
-
-    @property({ tooltip: '是否随机切换实例颜色（GPU 侧，CPU 几乎零成本）' })
+    @property({ tooltip: '是否随机切换实例颜色（每 N 帧一次；会写 GPU 实例 buffer，CPU 成本随数量线性）' })
     public enableDynamicColor: boolean = false;
 
-    @property({ tooltip: '颜色切换间隔（帧），越大 CPU 越轻松，0 表示每帧切换' })
+    @property({ tooltip: '颜色切换间隔（帧），越大 CPU 越轻松' })
     public colorSwitchInterval: number = 10;
 
-    // ============ UI 引用 ============
+    @property({ range: [0, 2000, 50], slide: true, tooltip: '每个立方体每帧额外做的浮点运算次数（0=关）。立方体数量不变时用它加大 CPU 负载' })
+    public cpuWorkPerCube: number = 0;
+
+    // ==================== UI 引用 ====================
 
     @property(SliderBinder)
     public countSlider: SliderBinder | null = null;
@@ -59,88 +160,155 @@ export class StressTestController extends Component {
     @property(Toggle)
     public colorToggle: Toggle | null = null;
 
-    @property({ type: Node, tooltip: '发热层模板节点（场景里的 HeatLayer，留空则按名字自动查找）' })
-    public heatLayerTemplate: Node | null = null;
+    @property(SliderBinder)
+    public gpuSlider: SliderBinder | null = null;
 
-    // ============ 内部状态 ============
+    // ==================== 内部状态 ====================
 
+    /** 平面副本（不含模板）。0 层时会被全部销毁；N 层时长度 = N-1 */
+    private _planeClones: Node[] = [];
+    /** 当前真正生效的层数（0 = 已关闭）。CSV 的 load_gpu_layers 列取这个值，不是面板上的 heatPlaneCount */
+    private _heatPlaneCount: number = 0;
+    /** 场景 B 的立方体节点 */
     private currentObjects: Node[] = [];
+    /** 颜色切换节流计数（帧） */
     private _frameCounter: number = 0;
+    /** 吸收 cpuWorkPerCube 的计算结果，防止 JIT 把循环优化掉 */
+    private _cpuSink: number = 0;
 
-    private _heatLayers: Node[] = [];
-    private _heatLayerCount: number = 0;
+    // ---- 压力着色（Pressure 模式）与层数着色（Load 模式）共用 ----
+    /** 帧时间指数滑动平均（ms），只有 Pressure 模式会更新 */
+    private _ftEma: number = 0;
+    /** 着色刷新节流（秒），4Hz */
+    private _tintTimer: number = 0;
+    /** 缓存 HeatPlane 的 sharedMaterial（所有副本共用这一个资产） */
+    private _tintMat: Material | null = null;
+    private _tintR: number = 255;
+    private _tintG: number = 89;
+    private _tintB: number = 26;
+    /** 单层 alpha（写材质时会按层数再除一次，做叠加补偿） */
+    private _tintA: number = 0.55;
+    /** Pressure 模式算出的压力值 0~1 */
+    private _pressureP: number = 0;
+
+    // ---- 帧时间自采 ----
+    /** 是否正在采集 */
     private _sampling: boolean = false;
+    /** 上一帧的 performance.now()，用来算帧间隔 */
     private _lastFrameNow: number = 0;
+    /** 当前 5 秒窗口的起点 */
     private _windowStart: number = 0;
+    /** 当前窗口内的逐帧耗时（ms） */
     private _windowFrames: number[] = [];
+    /** 已采集的 CSV 行（第 0 行是表头） */
     private _csvRows: string[] = [];
+    /** 开始采集的时间戳 */
     private _startTimestamp: number = 0;
+    /** FSR 升采样材质是否就绪 */
     private _fsrReady: boolean = false;
+    /** 最近一个完整窗口的平均 fps，给 getStatus 用 */
+    private _lastFps: number = 0;
 
-    // ============ 生命周期 ============
+    // ==================== 生命周期 ====================
 
+    /** 绑定两条滑块（CPU 数量 / GPU 层数）并把引用解析成实际节点 */
     onLoad() {
         if (this.countSlider) {
             this.countSlider.setValue(this.spawnCount, true);
             this.countSlider.onChange((v) => this.setSpawnCount(v, true));
         }
+        if (this.gpuSlider) {
+            // GPU 滑块 = 叠加层数，不碰 planeCoverage（覆盖率是独立旋钮，见下面的提示）
+            this.gpuSlider.setValue(this.heatPlaneCount, true);
+            this.gpuSlider.onChange((v) => this.setHeatPlaneCount(v));
+        }
+        // 覆盖率 < 1 表示单层没铺满全屏（刻意在 1 层之下做细调），启动时提示一句，但不改用户的值
+        if (this.planeCoverage < 0.999) {
+            console.log('[StressTest] 单层覆盖 = ' + this.planeCoverage.toFixed(2)
+                + '（边长比，≈ ' + Math.round(this.planeCoverage * this.planeCoverage * 100) + '% 像素）'
+                + '，平面未铺满全屏；要满屏就把 planeCoverage 设成 1');
+        }
+        this._resolveRefs();
     }
 
+    /**
+     * 负载生成只在这里（和手动调接口时）做一次，绝不放进 update()。
+     * 顺序有讲究：先 FSR 材质就绪 → 再开温控 → **最后才开始采样**。
+     * 采样必须在温控就绪之后启动，否则启动后那几秒"温控还没开"的帧会混进 CSV，
+     * 污染"温控开启"组的 baseline（resources.load 是异步的，真机首屏慢时窗口更大）。
+     */
     start() {
-        profiler.showStats();
+        if (this.showProfiler) profiler.showStats();
+
         this.generateObjects(this.spawnCount);
         this.refreshUI();
+        this.applyLoad();
+        if (this._heatPlaneCount > 0) this.diagPlane();   // 只在启动时打一次，拖滑块不会刷屏
 
-        this.initFsr();
-
-        if (this.enableThermalControl) {
-            this.thermalOn();
-        }
-
-        this.startLogging();
-        if (this.writeCsv) {
-            this.cleanOldCsv();
-            this.schedule(() => this._autoExport(), 60);
-        }
-
-        const heatTemplate = this._findHeatLayerTemplate();
-        if (heatTemplate && heatTemplate.active) {
-            this._heatLayerCount = 1;
-        }
+        // FSR 材质必须先就绪，否则第一次降分辨率会"糊着降"（没有升采样）
+        this._initFsr(() => {
+            if (this.enableThermalControl) {
+                this.thermalOn();
+            } else {
+                console.log('[StressTest] thermal OFF (enableThermalControl = false)');
+            }
+            // 采样与温控状态同生命周期：到这里温控才真正就绪
+            this.startLogging();
+            if (this.writeCsv) {
+                this.cleanOldCsv();
+                this.schedule(() => this._autoExport(), 60);
+            }
+        });
 
         (globalThis as any).stressTest = this;
         console.log('[StressTest] attached to globalThis.stressTest');
-        console.log('  load: setSpawnCount(n) | setScale(s) | setHeatLayerCount(n)');
-        console.log('  run : setFps(n) | getFps() | getStatus() | exportCsv()');
-        console.log('  thermal: thermalOn() | thermalOff() | thermalDown() | thermalUp() | thermalLevel()');
+        console.log('  A/GPU: setHeatPlaneCount(1~8) 改叠层数 | setPlaneCoverage(0~1) 改单层面积 | setParticleRate(n)');
+        console.log('  B/CPU: setSpawnCount(n) | setCpuWork(0~2000) | setColorEnabled(true|false)');
+        console.log('  drs  : setScale(1|0.85|0.7|0.3) | thermalOn() | thermalOff() | thermalDown() | thermalUp() | setTriggerPercent(10)');
+        console.log('  data : exportCsv() | printCsv(n) | getStatus() | logStatus()');
     }
 
-    // ============ update：CPU 优化版 ============
-
+    /**
+     * 两套场景共用这一个 update()，靠 spawnCount 切换：
+     * - spawnCount = 0 → 场景 A（纯 GPU）：currentObjects 为空，下面的循环一次都不进，每帧只剩 3 行采样。
+     * - spawnCount > 0 → 场景 B（CPU 负载）：逐立方体自转/浮动/公转/实例色，O(N)，CPU 抢走瓶颈。
+     * 这是红线 2 的边界：A 的数据必须来自"没有这个循环"的那次运行，所以别在 A 的测试里开立方体。
+     */
     update(dt: number) {
-        if (this._sampling) {
-            const now = performance.now();
-            if (this._lastFrameNow > 0) {
-                this._windowFrames.push(now - this._lastFrameNow);
-            }
-            this._lastFrameNow = now;
-            if (now - this._windowStart >= 5000) {   // 每 5 秒一行，跟 adb 温度采样对齐
-                this._flushCsvRow(now);
-                this._windowStart = now;
-                this._windowFrames.length = 0;
-            }
-        }
         const objects = this.currentObjects;
-        const len = objects.length;
-        if (len === 0) return;
+        if (objects.length > 0) {
+            this._animateCubes(objects, dt);
+        }
 
-        const t = director.getTotalTime();
+        // Pressure 模式才需要逐帧采样；Load 模式（默认）颜色只跟层数走，这里零开销
+        if (this.tintMode === TintMode.Pressure) {
+            this._updatePressureTint(dt);
+        }
+
+        if (!this._sampling) return;
+        const now = performance.now();
+        if (this._lastFrameNow > 0) {
+            this._windowFrames.push(now - this._lastFrameNow);
+        }
+        this._lastFrameNow = now;
+        if (now - this._windowStart >= 5000) {   // 每 5 秒一行，跟 adb 温度采样对齐
+            this._flushCsvRow(now);
+            this._windowStart = now;
+            this._windowFrames.length = 0;
+        }
+    }
+
+    /**
+     * 场景 B 的 CPU 负载主体：每帧遍历所有立方体，改 transform（+可选改实例颜色）。
+     * 这就是"CPU 瓶颈"的来源：N 个立方体 = N 次 euler/position 写入 + N 次引擎侧世界矩阵更新。
+     */
+    private _animateCubes(objects: Node[], dt: number): void {
+        const len = objects.length;
         const rotSpeed = this.rotationSpeed * dt;
         const orbitRad = this.orbitSpeed * Math.PI / 180 * dt;
         const rotSpeedY = rotSpeed * 0.7;
         const rotSpeedZ = rotSpeed * 0.3;
-        const floatAmp = this.floatAmplitude;
-        const floatFreq = this.floatFrequency;
+        const work = Math.max(0, Math.floor(this.cpuWorkPerCube));
 
         this._frameCounter++;
         const doColorSwitch = this.enableDynamicColor
@@ -158,14 +326,13 @@ export class StressTestController extends Component {
                 euler.z + rotSpeedZ
             );
 
-            // 浮动 + 公转
+            // 公转（已去掉上下浮动：抖动刺眼，floatAmplitude/floatFrequency 两个属性已删除，Y 保持不变）
             const pos = obj.position;
-            const y = Math.sin(t * floatFreq + i) * floatAmp;
             const radius = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
             const angle = Math.atan2(pos.z, pos.x) + orbitRad;
-            obj.setPosition(Math.cos(angle) * radius, y, Math.sin(angle) * radius);
+            obj.setPosition(Math.cos(angle) * radius, pos.y, Math.sin(angle) * radius);
 
-            // 实例化颜色变换（GPU 侧）
+            // 实例化颜色变换（写 GPU 实例 buffer，CPU 侧同样随数量线性）
             if (doColorSwitch) {
                 const model = obj.getComponent(MeshRenderer);
                 if (model) {
@@ -177,11 +344,513 @@ export class StressTestController extends Component {
                     ]);
                 }
             }
+
+            // 可选：纯浮点负载，用来在立方体数量不变时继续加压（结果写进字段，防止被优化掉）
+            if (work > 0) {
+                let acc = this._cpuSink + i;
+                for (let k = 0; k < work; k++) {
+                    acc = acc * 1.0000001 + 0.5;
+                }
+                this._cpuSink = acc % 1000;
+            }
         }
     }
 
-    // ============ 对外接口 ============
+    /**
+     * 统一入口：按 tintMode 算出 p（0=蓝, 1=红）再写材质。
+     * - Load 模式：p 只由层数决定（1 层=0，8 层=1）→ 拖滑块立刻变色，跟帧率无关，纯 UI 反馈。
+     * - Pressure 模式：p 由实测帧时间决定 → 能看出温控降分辨率是否真的把压力降下来。
+     */
+    private _updateTint(): void {
+        const mode = this.tintMode;
+        if (mode === TintMode.Off) return;
 
+        let p: number;
+        if (mode === TintMode.Load) {
+            p = (Math.max(1, this._heatPlaneCount) - 1) / 7;
+        } else {
+            p = this._pressureP;
+        }
+        p = p < 0 ? 0 : (p > 1 ? 1 : p);
+
+        this._tintR = Math.round(40 + 215 * p);
+        this._tintG = Math.round(120 - 95 * p);
+        this._tintB = Math.round(255 - 220 * p);
+        this._tintA = 0.45 + 0.33 * p;
+        this._applyTint();
+    }
+
+    /** Pressure 模式才会用到的逐帧采样（Load 模式下 update 根本不调用它） */
+    private _updatePressureTint(dt: number): void {
+        const ftMs = Math.min(dt * 1000, 100);   // 首帧/长卡顿钳制，避免闪一下红
+        this._ftEma = this._ftEma > 0 ? this._ftEma * 0.9 + ftMs * 0.1 : ftMs;
+
+        this._tintTimer += dt;
+        if (this._tintTimer < 0.25) return;      // 4Hz 足够，省掉无谓的 uniform 写入
+        this._tintTimer = 0;
+
+        const budget = 1000 / (Number(game.frameRate) || 60);
+        const range = Math.max(0.05, this.pressureRange);
+        const p = (this._ftEma / budget - 1) / range;
+        this._pressureP = p < 0 ? 0 : (p > 1 ? 1 : p);
+        this._updateTint();
+    }
+
+    /**
+     * 写材质颜色。关键是**按层数做 alpha 补偿**：N 层加法混合时每层 alpha 除以 N，
+     * 总亮度保持不变，颜色才不会被叠成纯白，蓝→红的读数在任何层数下都一致。
+     */
+    private _applyTint(): void {
+        if (this.tintMode === TintMode.Off) return;
+        const mat = this._tintMaterial();
+        if (!mat) return;
+        const layers = Math.max(1, this._heatPlaneCount);
+        const a = Math.max(8, Math.min(255, Math.round(this._tintA * 255 / layers)));
+        mat.setProperty('heatTint', new Color(this._tintR, this._tintG, this._tintB, a));
+    }
+
+    /** 调试：当前着色到底算出了什么、材质有没有真的收到。 */
+    public tintInfo() {
+        const mat = this._tintMaterial();
+        const got: any = mat ? mat.getProperty('heatTint', 0) : null;
+        const budget = 1000 / (Number(game.frameRate) || 60);
+        const loadP = (Math.max(1, this._heatPlaneCount) - 1) / 7;
+        const info = {
+            tintMode: TintMode[this.tintMode],
+            layers: this._heatPlaneCount,
+            computedP: Number((this.tintMode === TintMode.Load ? loadP : this._pressureP).toFixed(3)),
+            ftEmaMs: Number(this._ftEma.toFixed(2)),
+            budgetMs: Number(budget.toFixed(2)),
+            computedRGB: [this._tintR, this._tintG, this._tintB],
+            material: mat ? mat.name : 'NULL',
+            materialHeatTint: got ? { r: got.r, g: got.g, b: got.b, a: got.a } : 'NULL',
+        };
+        console.log('[StressTest] tintInfo: ' + JSON.stringify(info));
+        return info;
+    }
+
+    /**
+     * 调试：强制一个颜色，用来验证"颜色 → 材质 → 屏幕"这条链路是否通。
+     * 会切成 Off 模式，检查完记得 stressTest.setTintMode('load') 恢复。
+     */
+    public testTint(r: number, g: number, b: number, a = 0.6) {
+        this.tintMode = TintMode.Off;
+        const mat = this._tintMaterial();
+        if (!mat) { console.error('[StressTest] testTint: 拿不到材质'); return; }
+        mat.setProperty('heatTint', new Color(r, g, b, Math.round(a * 255)));
+        const got: any = mat.getProperty('heatTint', 0);
+        console.log('[StressTest] testTint -> rgb(' + r + ',' + g + ',' + b + '), 材质实际值=' +
+            (got ? 'rgb(' + got.r + ',' + got.g + ',' + got.b + ') a=' + got.a : 'NULL') +
+            '（已切到 Off，恢复：stressTest.setTintMode(\'load\')）');
+    }
+
+    /** 控制台切着色模式：'load'（默认，按层数）| 'pressure'（按实测帧时间）| 'off' */
+    public setTintMode(mode: string) {
+        const m = String(mode).toLowerCase();
+        this.tintMode = m === 'pressure' ? TintMode.Pressure
+            : (m === 'off' ? TintMode.Off : TintMode.Load);
+        this._updateTint();
+        console.log('[StressTest] tintMode = ' + TintMode[this.tintMode]);
+    }
+
+    /** 取 HeatPlane 的材质并缓存（用 sharedMaterial：所有副本共用同一个资产，改一次全变） */
+    private _tintMaterial(): Material | null {
+        if (this._tintMat && this._tintMat.isValid) return this._tintMat;
+        const tpl = this.heatPlane;
+        if (!tpl || !tpl.isValid) return null;
+        const mr = tpl.getComponent(MeshRenderer);
+        // 用 sharedMaterial：所有克隆平面共用同一个材质资产，改一次全变
+        this._tintMat = (mr && mr.sharedMaterial) ? mr.sharedMaterial : null;
+        return this._tintMat;
+    }
+
+    // ==================== 引用解析 ====================
+
+    /** 把面板上留空的引用按名字补齐（HeatPlane / Plane / Particle） */
+    private _resolveRefs() {
+        const scene = this.node.scene;
+        if (!this.heatPlane && scene) {
+            this.heatPlane = this._findByName(scene, 'HeatPlane') || this._findByName(scene, 'Plane');
+        }
+        if (!this.particleNode && scene) {
+            this.particleNode = this._findByName(scene, 'Particle');
+        }
+        if (!this.heatPlane) {
+            console.error('[StressTest] 找不到平面：场景根节点下需要一块 MeshRenderer（建议命名 HeatPlane）');
+        }
+    }
+
+    /** 按名字递归找节点（只在启动/改引用时用，别放进逐帧逻辑） */
+    private _findByName(root: Node | null, name: string): Node | null {
+        if (!root) return null;
+        if (root.name === name) return root;
+        const children = root.children;
+        for (let i = 0; i < children.length; i++) {
+            const found = this._findByName(children[i], name);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    /**
+     * 找 3D 相机：优先用面板指定的 cameraNode；否则挑第一个**透视**相机
+     * （Canvas 下的 UI 相机是正交的，正好被这句过滤掉）。
+     */
+    private _findCamera(): Camera | null {
+        if (this.cameraNode) {
+            const c = this.cameraNode.getComponent(Camera);
+            if (c) return c;
+        }
+        const scene = this.node.scene;
+        if (!scene) return null;
+        const cams = scene.getComponentsInChildren(Camera);
+        for (let i = 0; i < cams.length; i++) {
+            if (cams[i].projection === Camera.ProjectionType.PERSPECTIVE) return cams[i];
+        }
+        return cams.length > 0 ? cams[0] : null;
+    }
+
+    // ==================== 负载生成（只在 start / 手动调用时执行） ====================
+
+    /** 重新生成平面层数 + 摆位 + 粒子速率。调参后用控制台调用即可，不用重新构建。 */
+    public applyLoad(): void {
+        this._syncPlanes();
+        if (this.autoFitToCamera && this._heatPlaneCount > 0) {
+            this._fitToCamera();
+        }
+        if (this.particleRate >= 0) {
+            this.setParticleRate(this.particleRate);
+        }
+        this._logLoadSummary();
+    }
+
+    /**
+     * 诊断：把"平面到底在不在视野里、有没有网格、材质/effect 是不是对的那个"一次性打到控制台。
+     * 平面不出来时先看这几行，别去瞎改 shader。
+     */
+    public diagPlane(): boolean {
+        const n = this.heatPlane;
+        if (!n || !n.isValid) {
+            console.error('[StressTest][diag] heatPlane = null（没找到节点，检查命名/引用）');
+            return false;
+        }
+        const mr = n.getComponent(MeshRenderer);
+        const mat: any = mr ? (mr.sharedMaterial as any) : null;
+        const mesh: any = mr ? (mr.mesh as any) : null;
+        const model: any = mr ? (mr as any).model : null;
+        const wp = n.worldPosition;
+        const ws = n.worldScale;
+
+        console.log('[StressTest][diag] node: name=' + n.name
+            + ' activeInHierarchy=' + n.activeInHierarchy
+            + ' layer=' + n.layer
+            + ' parent=' + (n.parent ? n.parent.name : 'null')
+            + ' pos=(' + wp.x.toFixed(2) + ',' + wp.y.toFixed(2) + ',' + wp.z.toFixed(2) + ')'
+            + ' scale=(' + ws.x.toFixed(2) + ',' + ws.y.toFixed(2) + ',' + ws.z.toFixed(2) + ')');
+        const e = this._planeExtents(n);
+        const orient = (e.y < 1e-3 && e.z > 1e-3) ? 'XZ(需自动立起)' : 'XY';
+        console.log('[StressTest][diag] render: hasMR=' + !!mr
+            + ' mrEnabled=' + (mr ? mr.enabledInHierarchy : false)
+            + ' mesh=' + (mesh ? ((mesh.name || 'unnamed') + ' ' + e.x.toFixed(2) + 'x' + e.y.toFixed(2) + 'x' + e.z.toFixed(2) + ' ' + orient) : 'NULL')
+            + ' mat=' + (mat ? mat.name : 'NULL')
+            + ' effect=' + (mat && mat.effectAsset ? mat.effectAsset.name : 'NULL')
+            + ' subModels=' + (model && model.subModels ? model.subModels.length : 'no-model')
+            + ' visFlags=' + (model ? model.visFlags : 'n/a'));
+
+        // 中心点投影到裁剪空间：判断是否真的落在相机视锥里
+        const camComp = this._findCamera();
+        let inView = false;
+        if (camComp) {
+            const rc: any = (camComp as any).camera;
+            const vp = rc && rc.matViewProj;
+            if (vp) {
+                const v4 = new Vec4(wp.x, wp.y, wp.z, 1);
+                Vec4.transformMat4(v4, v4, vp);
+                const w = Math.abs(v4.w) < 1e-6 ? 1e-6 : v4.w;
+                const nx = v4.x / w;
+                const ny = v4.y / w;
+                const nz = v4.z / w;
+                inView = Math.abs(nx) <= 1 && Math.abs(ny) <= 1 && nz >= 0 && nz <= 1;
+                console.log('[StressTest][diag] ndc=(' + nx.toFixed(3) + ',' + ny.toFixed(3) + ',' + nz.toFixed(3)
+                    + ')  inFrustum=' + inView
+                    + '  camera=' + camComp.node.name
+                    + ' proj=' + (camComp.projection === Camera.ProjectionType.PERSPECTIVE ? 'perspective' : 'ortho')
+                    + ' fov=' + camComp.fov.toFixed(1) + 'deg'
+                    + ' aspect=' + (rc && rc.aspect ? rc.aspect.toFixed(3) : '?')
+                    + ' camLayerHit=' + ((camComp.visibility & n.layer) !== 0));
+            }
+        }
+        if (!mr) console.error('[StressTest][diag] 节点上没有 MeshRenderer');
+        else if (!mesh) console.error('[StressTest][diag] MeshRenderer 的 mesh 是空的（这就是看不见的直接原因）');
+        else if (!mat) console.error('[StressTest][diag] 没有材质');
+        else if (!inView) console.error('[StressTest][diag] 平面中心不在相机视锥内（位置/朝向不对，或相机找错了）');
+        return !!mr && !!mesh && !!mat && n.activeInHierarchy && inView;
+    }
+
+    /**
+     * "GPU 负载"滑块：控制**叠加层数**（0~8），不改平面大小。
+     * 每层都是铺满全屏的同一张 512 次迭代 shader，depthTest 关闭 → 逐层累加片元成本，
+     * 所以总负载 ≈ 层数 × 全屏像素，而画面构图完全不变。
+     * 0 层 = 彻底关掉：平面隐藏、所有副本销毁，GPU 侧零片元。
+     */
+    public setHeatPlaneCount(count: number): void {
+        this.heatPlaneCount = Math.max(0, Math.min(8, Math.floor(count)));
+        if (this.gpuSlider) this.gpuSlider.setValue(this.heatPlaneCount, true);
+        this.applyLoad();
+    }
+
+    /**
+     * 单层覆盖屏幕的比例（0.05~1，边长比）。**这是给"1 层都太重"时用的细调旋钮**：
+     * 层数是整数倍跳变（1→2 直接翻倍），而覆盖率能连续把单层负载从 100% 压到 0.25%（像素 ∝ 比例²）。
+     * 代价是平面不再铺满全屏 —— 只做细调时用，主旋钮仍是层数。
+     */
+    public setPlaneCoverage(coverage: number): void {
+        this.planeCoverage = Math.max(0.05, Math.min(1, coverage));
+        if (this.autoFitToCamera && this._heatPlaneCount > 0) this._fitToCamera();
+        this._logLoadSummary();
+    }
+
+    /**
+     * 粒子发射速率。注意：Cocos 粒子模拟在 CPU 侧，粒子上万时会污染 CPU 瓶颈，
+     * 场景 A 只当"额外填充率"用，主负载始终是平面。
+     */
+    public setParticleRate(rate: number): void {
+        this.particleRate = rate;
+        if (!this.particleNode) return;
+        const ps = this.particleNode.getComponent(ParticleSystem);
+        if (!ps) return;
+        ps.rateOverTime.constant = Math.max(0, rate);
+        if (rate > 0 && !this.particleNode.active) this.particleNode.active = true;
+        console.log('[StressTest] particle rate = ' + ps.rateOverTime.constant + '/s');
+    }
+
+    /** 开关粒子节点（粒子是次要负载，注意 Cocos 粒子模拟走 CPU） */
+    public setParticleActive(on: boolean): void {
+        if (!this.particleNode) return;
+        this.particleNode.active = on;
+        const ps = this.particleNode.getComponent(ParticleSystem);
+        if (ps && on) ps.play();
+        console.log('[StressTest] particle node active = ' + on);
+    }
+
+    /**
+     * 把副本数量对齐到 heatPlaneCount：0 = 隐藏模板并销毁所有副本；N = 激活模板 + N-1 个副本。
+     * 只在 applyLoad() 里调用，所以拖滑块的开销是 O(层数变化)，与帧率无关。
+     */
+    private _syncPlanes(): void {
+        const tpl = this.heatPlane;
+        if (!tpl || !tpl.isValid) {
+            this._heatPlaneCount = 0;
+            return;
+        }
+        this._validatePlaneNode(tpl);
+        this._checkPlaneMaterial(tpl);
+
+        const want = Math.max(0, Math.min(8, Math.floor(this.heatPlaneCount)));
+        this.heatPlaneCount = want;
+
+        while (this._planeClones.length > Math.max(0, want - 1)) {
+            const n = this._planeClones.pop();
+            if (n && n.isValid) n.destroy();
+        }
+
+        // 0 层 = 彻底关掉 GPU 负载：模板也隐藏，GPU 侧一个片元都不跑
+        if (want === 0) {
+            if (tpl.active) {
+                tpl.active = false;
+                console.log('[StressTest] GPU 负载已关闭（0 层，平面隐藏）');
+            }
+            this._heatPlaneCount = 0;
+            return;
+        }
+
+        if (!tpl.active) tpl.active = true;
+        while (this._planeClones.length < want - 1) {
+            const clone = instantiate(tpl);
+            clone.name = 'HeatPlane_' + (this._planeClones.length + 2);
+            clone.setParent(tpl.parent);
+            this._validatePlaneNode(clone);
+            this._planeClones.push(clone);
+        }
+        this._heatPlaneCount = want;
+        // 层数变了立刻重算颜色（Load 模式下这就是滑块反馈）和每层 alpha（叠加补偿）
+        this._updateTint();
+    }
+
+    /**
+     * 红线 1 的运行时自检：GPU 压测点必须在场景根下、layer 必须被 3D 相机可见。
+     * Canvas(UI_2D) 走独立 2D 通道、按原生分辨率渲染，挂在下面的节点不吃 shadingScale。
+     */
+    private _validatePlaneNode(node: Node): void {
+        if (this._hasCanvasAncestor(node)) {
+            console.error('[StressTest] ' + node.name
+                + ' 挂在 Canvas 下：shadingScale 只缩放 3D 相机，它不会跟着降分辨率，必须移到场景根节点！');
+        }
+        if (node.layer === Layers.Enum.UI_2D || node.layer === Layers.Enum.UI_3D) {
+            node.layer = Layers.Enum.DEFAULT;
+            console.warn('[StressTest] ' + node.name + ' 的 layer 是 UI，已改为 DEFAULT，否则 3D 相机看不见它');
+        }
+    }
+
+    /** 往上找最近的 Canvas（找到说明这个节点在 UI 通道里，不吃 shadingScale） */
+    private _hasCanvasAncestor(node: Node): boolean {
+        let cur: Node | null = node;
+        while (cur) {
+            if (cur.getComponent(Canvas)) return true;
+            cur = cur.parent;
+        }
+        return false;
+    }
+
+    /** 最常见的坑：平面挂的是 2D 版 HeatShader（带 USE_LOCAL 分支），3D 下世界变换会整个失效。 */
+    private _checkPlaneMaterial(node: Node): void {
+        const mr = node.getComponent(MeshRenderer);
+        const mat: any = mr ? (mr.sharedMaterial as any) : null;
+        if (!mat) {
+            console.warn('[StressTest] ' + node.name + ' 没有材质，平面不会出图');
+            return;
+        }
+        const eff: string = mat.effectAsset ? String(mat.effectAsset.name) : '';
+        if (eff && eff.indexOf('HeatShader3D') < 0) {
+            console.error('[StressTest] ' + node.name + ' 的材质是 "' + eff
+                + '"：场景 A 必须用 Mat_HeatShader3D（旧 HeatShader 在 3D 下不带世界变换，平面会跑位/没有负载）');
+        }
+    }
+
+    /** 按相机 fov / aspect / 距离算出铺满视野所需的尺寸，再把每块平面摆正、缩放、对齐。 */
+    private _fitToCamera(): void {
+        const camComp = this._findCamera();
+        if (!camComp) {
+            console.warn('[StressTest] 找不到 3D 相机，跳过自动摆位');
+            return;
+        }
+        const rc: any = (camComp as any).camera;
+        const camNode = camComp.node;
+        const camRot = camNode.worldRotation;
+
+        const forward = new Vec3(0, 0, -1);
+        Vec3.transformQuat(forward, forward, camRot);
+
+        const near = camComp.near > 0 ? camComp.near : (rc && rc.near > 0 ? rc.near : 1);
+        const far = camComp.far > 0 ? camComp.far : (rc && rc.far > 0 ? rc.far : 1000);
+        const dist = Math.min(Math.max(this.planeDistance, near * 2), far * 0.8);
+
+        const target = new Vec3();
+        Vec3.scaleAndAdd(target, camNode.worldPosition, forward, dist);
+
+        // rc.aspect 已经是渲染目标宽高比（shadingScale 等比缩放，不改变比值）；拿不到时退回窗口尺寸
+        const winAspect = screen.windowSize.height > 0
+            ? screen.windowSize.width / screen.windowSize.height
+            : 1;
+        const aspect = rc && rc.aspect > 0 ? rc.aspect : winAspect;
+
+        // 坑：scene.Camera.fov 是【弧度】（引擎里 _fov = toRadian(45)），组件上的 fov 才是角度。
+        // 之前误按角度算，tan(fov/2) 小了约 57 倍，平面被缩成 0.38x0.21（屏幕上一个小点）。
+        const fovDeg = camComp.fov;
+        const isPerspective = camComp.projection === Camera.ProjectionType.PERSPECTIVE;
+        let halfW = 1;
+        let halfH = 1;
+        if (isPerspective) {
+            const halfTan = Math.tan((fovDeg * Math.PI) / 180 * 0.5);
+            if (camComp.fovAxis === Camera.FOVAxis.VERTICAL) {
+                halfH = halfTan * dist;
+                halfW = halfH * aspect;
+            } else {
+                halfW = halfTan * dist;
+                halfH = halfW / aspect;
+            }
+        } else {
+            halfH = camComp.orthoHeight;
+            halfW = halfH * aspect;
+        }
+
+        const k = Math.min(1, Math.max(0.05, this.planeCoverage)) * (1 + this.coverageMargin);
+        const width = halfW * 2 * k;
+        const height = halfH * 2 * k;
+
+        const tpl = this.heatPlane;
+        if (tpl && tpl.isValid) this._applyPlaneTransform(tpl, target, camRot, width, height);
+        for (let i = 0; i < this._planeClones.length; i++) {
+            const n = this._planeClones[i];
+            if (n && n.isValid) this._applyPlaneTransform(n, target, camRot, width, height);
+        }
+
+        console.log('[StressTest] fit: dist=' + dist.toFixed(1)
+            + ' size=' + width.toFixed(2) + 'x' + height.toFixed(2)
+            + ' coverage=' + this.planeCoverage.toFixed(2)
+            + ' fov=' + fovDeg.toFixed(1) + 'deg'
+            + ' aspect=' + aspect.toFixed(3));
+        if (!(width > 0.01) || !(height > 0.01)) {
+            console.error('[StressTest] 算出的平面尺寸异常：' + width + 'x' + height + '（相机 fov/aspect 取值有问题）');
+        }
+    }
+
+    /**
+     * 把一块平面贴到相机正前方：自动识别网格是 XY(Quad) 还是 XZ(Plane) 朝向，
+     * 只缩放"面内"的两个轴，避免把厚度/法线方向也拉长。
+     */
+    private _applyPlaneTransform(node: Node, target: Vec3, camRot: Readonly<Quat>, width: number, height: number): void {
+        const e = this._planeExtents(node);
+        const xzPlane = e.y < 1e-3 && e.z > 1e-3;
+
+        const rot = new Quat();
+        if (xzPlane) {
+            // XZ 平面（法线 +Y）：先绕 X 转 90° 立起来，再对齐相机朝向
+            const qx = new Quat();
+            Quat.fromEuler(qx, 90, 0, 0);
+            Quat.multiply(rot, camRot, qx);
+        } else {
+            Quat.copy(rot, camRot);
+        }
+
+        const sx = width / Math.max(e.x, 1e-3);
+        const sy = xzPlane ? 1 : height / Math.max(e.y, 1e-3);
+        const sz = xzPlane ? height / Math.max(e.z, 1e-3) : 1;
+
+        if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) {
+            console.error('[StressTest] 平面缩放算出了 NaN/Inf，跳过摆位（检查相机的 fov/aspect）');
+            return;
+        }
+
+        node.setWorldRotation(rot);
+        node.setWorldScale(new Vec3(sx, sy, sz));
+        node.setWorldPosition(target);
+    }
+
+    /**
+     * 读网格包围盒的局部尺寸。用来判断这块面片是 XY(Quad，法线 +Z) 还是 XZ(Plane，法线 +Y)，
+     * 以及要把 scale 设成"目标尺寸 / 原始尺寸"。
+     */
+    private _planeExtents(node: Node): PlaneExtents {
+        const mr = node.getComponent(MeshRenderer);
+        const mesh: any = mr ? (mr.mesh as any) : null;
+        const st: any = mesh ? mesh.struct : null;
+        if (st && st.minPosition && st.maxPosition) {
+            return {
+                x: Math.abs(st.maxPosition.x - st.minPosition.x),
+                y: Math.abs(st.maxPosition.y - st.minPosition.y),
+                z: Math.abs(st.maxPosition.z - st.minPosition.z),
+            };
+        }
+        return { x: 1, y: 1, z: 0 };   // 兜底：当作 1x1 的 XY 面片
+    }
+
+    /** 打一行"当前负载配置"，每次调负载都会打，方便和 CSV 对上号 */
+    private _logLoadSummary(): void {
+        const pipeline = (director as any).root?.pipeline;
+        const scale = pipeline ? pipeline.shadingScale.toFixed(2) : 'N/A';
+        const px = Math.round(this.planeCoverage * this.planeCoverage * 100);
+        console.log('[StressTest] load: planes=' + this._heatPlaneCount
+            + ' coverage=' + this.planeCoverage.toFixed(2) + '(' + px + '% 像素/层)'
+            + ' cubes=' + this.currentObjects.length
+            + ' | scale=' + scale
+            + ' fpsTarget=' + game.frameRate
+            + ' | thermal=' + (this.enableThermalControl ? 'ON' : 'OFF'));
+    }
+
+    // ==================== 对外接口 ====================
+
+    /** 场景 B：立方体数量。0 = 回到场景 A（纯 GPU）。滑块和它双向同步 */
     public setSpawnCount(count: number, fromSlider: boolean = false) {
         this.spawnCount = Math.max(0, Math.floor(count));
         this.generateObjects(this.spawnCount);
@@ -190,25 +859,29 @@ export class StressTestController extends Component {
         }
     }
 
-    /** 运行时开关颜色变换 */
-    public setColorEnabled(enabled: boolean) {
-        this.enableDynamicColor = enabled;
-        if (this.colorToggle) {
-            this.colorToggle.isChecked = enabled;
-        }
-        console.log('[StressTest] dynamic color = ' + (enabled ? 'ON' : 'OFF'));
+    /** 场景 B 的加压旋钮：每个立方体每帧额外做多少次浮点运算（0 = 关） */
+    public setCpuWork(n: number) {
+        this.cpuWorkPerCube = Math.max(0, Math.floor(n));
+        console.log('[StressTest] cpuWorkPerCube = ' + this.cpuWorkPerCube
+            + '（约 ' + (this.currentObjects.length * this.cpuWorkPerCube) + ' 次浮点运算/帧）');
     }
 
+    /** 直接改帧率档（game.frameRate），用来对比 60/30 档的收益 */
     public setFps(fps: number) {
         game.frameRate = fps;
         console.log('[StressTest] frameRate = ' + fps + ' (readback ' + game.frameRate + ')');
     }
 
+    /** 读当前帧率档 */
     public getFps(): string | number {
         return game.frameRate;
     }
 
-    /** 直接设渲染分辨率缩放（shadingScale），验证降/升分辨率是否生效 */
+    /**
+     * 直接设渲染分辨率缩放（shadingScale），不经过温控，用来手动量"降分辨率能回多少帧"。
+     * 注意：WebPipeline 的 setter 只写 pipelineSceneData，必须再调 forceResizeAllWindows 才会重建 RT，
+     * 否则会出现"值变了但 RT 尺寸没变"。
+     */
     public setScale(scale: number) {
         const root: any = (director as any).root;
         const pipeline = root?.pipeline;
@@ -216,41 +889,75 @@ export class StressTestController extends Component {
             pipeline.shadingScale = scale;
         }
         cclegacy.rendering?.forceResizeAllWindows?.();
-        console.log('[StressTest] shadingScale = ' + scale.toFixed(2) + ' (readback ' + (pipeline ? pipeline.shadingScale.toFixed(2) : 'N/A') + '), FSR=' + (this._fsrReady ? 'READY' : 'PENDING'));
+        console.log('[StressTest] shadingScale = ' + scale.toFixed(2)
+            + ' (readback ' + (pipeline ? pipeline.shadingScale.toFixed(2) : 'N/A')
+            + '), FSR=' + (this._fsrReady ? 'READY' : 'PENDING'));
     }
 
-    // ============ FSR (builtin pipeline) ============
+    /** 打一行当前状态（真机控制台里最常用的自查手段） */
+    public logStatus() {
+        const s: any = this.getStatus();
+        console.log('[StressTest] status: ' + JSON.stringify(s));
+        return s;
+    }
 
-    private initFsr() {
+    // ==================== FSR (builtin pipeline) ====================
+
+    /**
+     * 加载 FSR 升采样材质并交给 thermal 模块。
+     * 必须等它完成再开温控，否则第一次降分辨率是"糊着降"（没有升采样，看不出画质差异但帧率收益照旧）。
+     */
+    private _initFsr(done: () => void) {
         if (typeof (thermal as any).setFsrMaterial !== 'function') {
             console.warn('[StressTest] thermal.setFsrMaterial is unavailable; rebuild the custom engine to enable FSR.');
+            done();
             return;
         }
         resources.load('fsr/builtin-fsr', Material, (err, material) => {
             if (err || !material) {
                 console.error('[StressTest] FSR material load failed', err);
+                done();
                 return;
             }
             (thermal as any).setFsrMaterial(material);
             this._fsrReady = true;
             console.log('[StressTest] FSR material ready: ' + material.name);
+            done();
         });
     }
 
-    // ============ 温控（引擎 thermal 模块）============
+    // ==================== 温控（引擎 thermal 模块）====================
 
-    private static readonly THERMAL_LEVEL_NAMES = ['Normal', 'Warm', 'Hot', 'Critical', 'Emergency'];
+    private static readonly THERMAL_LEVEL_NAMES = ['Normal', 'Hot', 'Emergency'];
 
-    /** 开启温控（自动模式：采样→策略→先降分辨率，再降帧率） */
+    /**
+     * 开启温控。降档顺序：先 shadingScale（这就是场景 A 要验证的杠杆），scale 到底后才降帧率。
+     * 触发条件：20s 滑动窗口的平均帧时间 ≥ 预算 × (1 + triggerPercent%)。
+     */
     public thermalOn() {
-        thermal.enable({ minFrameRate: 30, triggerPercent: 10 });
+        const cfg: any = {
+            minFrameRate: this.thermalMinFrameRate,
+            triggerPercent: this.thermalTriggerPercent,
+            minScale: this.thermalMinScale,
+            enableScale: true,
+            enableFsr: true,
+        };
+        thermal.enable(cfg);
         thermal.onLevelChange((level) => {
             console.log('[StressTest] thermal level changed -> ' + StressTestController.THERMAL_LEVEL_NAMES[level]);
         });
+        if (typeof (thermal as any).onAction === 'function') {
+            (thermal as any).onAction((e: any) => {
+                this._log('thermal ' + e.direction + ' ' + e.lever + ' ' + e.from + ' -> ' + e.to
+                    + ' level=' + e.level
+                    + (e.avgMs && e.targetMs ? (' avg=' + e.avgMs.toFixed(2) + 'ms target=' + e.targetMs.toFixed(2) + 'ms') : ''));
+            });
+        }
         const state = thermal.getState();
         console.log('[StressTest] thermal ON: level=' + state.level
             + ', scale=' + Number(state.shadingScale).toFixed(2)
             + ', fps=' + state.frameRate
+            + ', trigger=' + this.thermalTriggerPercent + '%'
             + ', FSR=' + (this._fsrReady ? 'READY' : 'PENDING'));
     }
 
@@ -260,17 +967,19 @@ export class StressTestController extends Component {
         console.log('[StressTest] thermal OFF; frame rate and scale restored');
     }
 
-    /** 手动降一档（走 FrameRateAction + ScaleAction） */
+    /** 手动降一档（走 ScaleAction 优先） */
     public thermalDown(): boolean {
         const ok = thermal.stepDown();
-        console.log('[StressTest] manual thermal down: ' + (ok ? 'ok' : 'floor') + '; level=' + StressTestController.THERMAL_LEVEL_NAMES[thermal.getLevel()]);
+        console.log('[StressTest] manual thermal down: ' + (ok ? 'ok' : 'floor')
+            + '; level=' + StressTestController.THERMAL_LEVEL_NAMES[thermal.getLevel()]);
         return ok;
     }
 
-    /** 手动升一档（走 FrameRateAction + ScaleAction） */
+    /** 手动升一档 */
     public thermalUp(): boolean {
         const ok = thermal.stepUp();
-        console.log('[StressTest] manual thermal up: ' + (ok ? 'ok' : 'top') + '; level=' + StressTestController.THERMAL_LEVEL_NAMES[thermal.getLevel()]);
+        console.log('[StressTest] manual thermal up: ' + (ok ? 'ok' : 'top')
+            + '; level=' + StressTestController.THERMAL_LEVEL_NAMES[thermal.getLevel()]);
         return ok;
     }
 
@@ -281,37 +990,64 @@ export class StressTestController extends Component {
         return level;
     }
 
-    // ============ UI 回调 ============
-
-    public onColorToggleChanged(toggle: Toggle) {
-        this.enableDynamicColor = toggle.isChecked;
-        console.log('[StressTest] dynamic color = ' + this.enableDynamicColor);
+    /** 运行时改降档阈值（%），真机上调"多容易触发降档"，不用重新构建 */
+    public setTriggerPercent(percent: number) {
+        this.thermalTriggerPercent = percent;
+        (thermal as any).setThreshold?.(percent);
+        console.log('[StressTest] thermal triggerPercent = ' + percent + '%');
     }
 
+    // ==================== UI 回调 ====================
+
+    /** 实例颜色开关（场景 B 用：每 colorSwitchInterval 帧给所有立方体换一次色） */
+    public onColorToggleChanged(toggle: Toggle) {
+        if (!toggle) return;
+        this.enableDynamicColor = toggle.isChecked;
+        console.log('[StressTest] dynamic color = ' + this.enableDynamicColor
+            + (this.currentObjects.length === 0 ? '（当前没有立方体，无实际开销）' : '（' + this.currentObjects.length + ' 个立方体，开启后每帧线性增加 CPU）'));
+    }
+
+    /** 开关颜色变换（供控制台调用） */
+    public setColorEnabled(enabled: boolean) {
+        this.enableDynamicColor = enabled;
+        if (this.colorToggle) this.colorToggle.isChecked = enabled;
+        console.log('[StressTest] dynamic color = ' + (enabled ? 'ON' : 'OFF'));
+    }
+
+    /** 把 UI 同步成当前状态（避免启动时 Toggle 显示和实际不一致） */
     public refreshUI() {
-        if (this.colorToggle) {
+        if (!this.colorToggle) return;
+        if (this.colorToggle.isChecked !== this.enableDynamicColor) {
+            // 赋值会触发 check 事件 → onColorToggleChanged，值是幂等的，安全
             this.colorToggle.isChecked = this.enableDynamicColor;
         }
     }
 
+    /** 返回一份状态快照（不打印），给外部脚本/日志用 */
     public getStatus() {
         const pipeline = (director as any).root?.pipeline;
+        const state = thermal.getState();
         return {
-            spawnCount: this.spawnCount,
-            actualCount: this.currentObjects.length,
-            enableDynamicColor: this.enableDynamicColor,
-            colorSwitchInterval: this.colorSwitchInterval,
-            shadingScale: pipeline ? pipeline.shadingScale : 'N/A',
-            gameFrameRate: game.frameRate,
-            devicePixelRatio: screen.devicePixelRatio,
-            heatLayers: this._heatLayerCount,
+            mode: this.currentObjects.length > 0 ? 'B/CPU' : 'A/GPU',
+            heatPlanes: this._heatPlaneCount,
+            planeCoverage: Number(this.planeCoverage.toFixed(2)),
+            gpuLayers: this._heatPlaneCount,
+            cubes: this.currentObjects.length,
+            cpuWorkPerCube: this.cpuWorkPerCube,
+            particleRate: this.particleRate,
+            fps: Number(this._lastFps.toFixed(1)),
+            frameRate: game.frameRate,
+            shadingScale: pipeline ? Number(pipeline.shadingScale.toFixed(2)) : 'N/A',
+            thermalLevel: state.level,
+            thermalScale: Number(state.shadingScale),
             sampling: this._sampling,
-            csvRows: this._csvRows.length
+            csvRows: this._csvRows.length,
         };
     }
 
-    // ============ 帧时间自采（CSV 可选落盘）============
+    // ==================== 帧时间自采（CSV 可选落盘）====================
 
+    /** 开始采集：每 5 秒统计一行。会清空之前的所有行（含表头重建） */
     public startLogging() {
         this._sampling = true;
         this._startTimestamp = performance.now();
@@ -323,11 +1059,36 @@ export class StressTestController extends Component {
         console.log('[StressTest] frame-time sampling started (1 row / 5s, writeCsv=' + this.writeCsv + ')');
     }
 
+    /** 停止采集（已采集的行保留，仍可 exportCsv） */
     public stopLogging() {
         this._sampling = false;
         console.log('[StressTest] sampling stopped; rows=' + (this._csvRows.length - 1));
     }
 
+    /**
+     * 把已采集的 CSV 打到控制台（真机排查用）。
+     * 微信真机调试窗口里执行 `stressTest.printCsv(12)` 就能看最近 12 行，直接复制走。
+     * @param lastN 只要最近 N 行；0 = 全部
+     */
+    public printCsv(lastN: number = 0) {
+        const total = this._csvRows.length;
+        if (total <= 1) {
+            console.warn('[StressTest] 还没有 CSV 数据');
+            return;
+        }
+        let out: string[];
+        if (lastN > 0 && lastN < total - 1) {
+            out = [this._csvRows[0]].concat(this._csvRows.slice(total - lastN));
+        } else {
+            out = this._csvRows;
+        }
+        console.log('[StressTest][csv] rows=' + (total - 1) + '\n' + out.join('\n'));
+    }
+
+    /**
+     * 把 CSV 写进小游戏沙箱（wx.env.USER_DATA_PATH/thermal_<时间戳>.csv）。
+     * 非微信环境（编辑器预览）只打日志，不落盘。
+     */
     public exportCsv() {
         if (!this.writeCsv) {
             console.warn('[StressTest] writeCsv is off; skip file export');
@@ -358,6 +1119,11 @@ export class StressTestController extends Component {
         }
     }
 
+    /**
+     * 把当前 5 秒窗口的统计压成一行 CSV。
+     * 注意 fps_std 用的是"逐帧 FPS 的标准差"，不是帧时间的标准差；drop_rate 在满帧时因 vsync 抖动
+     * 会虚高到 60% 左右，判卡顿请优先看 jank_gt_2x / ft_p95 / ft_max。
+     */
     private _flushCsvRow(now: number) {
         const frames = this._windowFrames;
         const n = frames.length;
@@ -370,13 +1136,26 @@ export class StressTestController extends Component {
         }
         const avg = sum / n;
         const fps = 1000 / avg;
+        this._lastFps = fps;
         const sorted = frames.slice().sort((a, b) => a - b);
         const p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))];
-        const budget2x = (1000 / (Number(game.frameRate) || 60)) * 2;
+        const budget = 1000 / (Number(game.frameRate) || 60);
+        const budget2x = budget * 2;
         let jank = 0;
+        let drop = 0;
+        let fpsSum = 0;
+        let fpsSumSq = 0;
         for (let i = 0; i < n; i++) {
             if (frames[i] > budget2x) jank++;
+            if (frames[i] > budget) drop++;
+            const f = 1000 / frames[i];
+            fpsSum += f;
+            fpsSumSq += f * f;
         }
+        // 帧率标准差：5 秒窗口内逐帧 FPS 的标准差（单位 FPS）。
+        const meanFps = fpsSum / n;
+        const fpsStd = Math.sqrt(Math.max(0, fpsSumSq / n - meanFps * meanFps));
+        const dropRate = n > 0 ? (drop / n) * 100 : 0;
         const pipeline = (director as any).root?.pipeline;
         const shadingScale = pipeline ? pipeline.shadingScale.toFixed(2) : 'NA';
         const elapsedS = (now - this._startTimestamp) / 1000;
@@ -389,14 +1168,18 @@ export class StressTestController extends Component {
             max.toFixed(2),
             jank,
             this._getBatteryPct(),
-            this._heatLayerCount,
-            this.currentObjects.length,
+            this._heatPlaneCount,               // load_gpu_layers：历史列名，场景 A 写"实际平面数"
+            this.currentObjects.length,         // spawn_count：立方体数量
             shadingScale,
-            String(game.frameRate)
+            String(game.frameRate),
+            fpsStd.toFixed(2),
+            dropRate.toFixed(1)
         ].join(',');
         this._csvRows.push(row);
+        console.log('[StressTest] ' + row);
     }
 
+    /** 小游戏内弹一个 toast（非微信环境只打日志） */
     private _toast(msg: string) {
         const wx = this._getWx();
         if (wx && typeof wx.showToast === 'function') {
@@ -405,6 +1188,7 @@ export class StressTestController extends Component {
         console.log('[StressTest] ' + msg);
     }
 
+    /** 关键事件日志：同时进 console 和微信实时日志（真机不接调试器也能事后看） */
     private _log(msg: string) {
         console.log('[StressTest] ' + msg);
         const wx = this._getWx();
@@ -417,6 +1201,7 @@ export class StressTestController extends Component {
         }
     }
 
+    /** 开跑前清掉沙箱里上一次留下的 thermal_*.csv，避免文件越堆越多 */
     public cleanOldCsv(): void {
         if (!this.writeCsv) {
             console.log('[StressTest] writeCsv is off; skip cleanOldCsv');
@@ -466,6 +1251,7 @@ export class StressTestController extends Component {
         });
     }
 
+    /** 定时（60s）自动导出一次，防止跑久了数据全在内存里丢失 */
     private _autoExport() {
         if (!this.writeCsv) return;
         if (this._csvRows.length <= 1) return;
@@ -477,11 +1263,13 @@ export class StressTestController extends Component {
         }
     }
 
+    /** 取微信全局对象（编辑器预览里是 undefined） */
     private _getWx(): any {
         const g: any = typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : {});
         return g.wx;
     }
 
+    /** 电量百分比，取不到返回 'NA'（编辑器预览必然是 NA） */
     private _getBatteryPct(): string {
         try {
             const wx = this._getWx();
@@ -493,63 +1281,21 @@ export class StressTestController extends Component {
         return 'NA';
     }
 
-    // ============ 发热层控制 ============
+    // ==================== 场景 B：立方体（CPU 负载） ====================
 
-    public setHeatLayerCount(count: number) {
-        count = Math.max(0, Math.floor(count));
-        const template = this._findHeatLayerTemplate();
-        if (template) {
-            template.active = count > 0;
-        }
-        const targetClones = template ? Math.max(0, count - 1) : Math.max(0, count);
-        while (this._heatLayers.length < targetClones) {
-            const clone = this._cloneHeatLayer(template);
-            if (clone) this._heatLayers.push(clone);
-            else break;
-        }
-        while (this._heatLayers.length > targetClones) {
-            const layer = this._heatLayers.pop();
-            if (layer && layer.isValid) layer.destroy();
-        }
-        this._heatLayerCount = count;
-        console.log('[StressTest] heat layers = ' + count);
-    }
-
-    private _findHeatLayerTemplate(): Node | null {
-        if (this.heatLayerTemplate && this.heatLayerTemplate.isValid) return this.heatLayerTemplate;
-        return this._findByName(this.node.scene, 'HeatLayer');
-    }
-
-    private _findByName(root: Node | null, name: string): Node | null {
-        if (!root) return null;
-        if (root.name === name) return root;
-        for (const child of root.children) {
-            const found = this._findByName(child, name);
-            if (found) return found;
-        }
-        return null;
-    }
-
-    private _cloneHeatLayer(template: Node | null): Node | null {
-        if (!template) {
-            console.warn('[StressTest] HeatLayer template not found');
-            return null;
-        }
-        const clone = instantiate(template);
-        clone.name = 'HeatLayer_' + (this._heatLayers.length + 2);
-        clone.setParent(template.parent);
-        clone.layer = template.layer;
-        return clone;
-    }
-
+    /**
+     * 生成 N 个立方体。只在滑块变化/启动时调用，不在 update() 里。
+     * 每个立方体在生成时写一次实例颜色（a_instanced_color），之后由 _animateCubes 决定是否继续改。
+     */
     private generateObjects(count: number) {
         this.clearObjects();
-        if (!this.testObjectPrefab) {
-            console.warn('[StressTest] testObjectPrefab is missing; skip object generation');
+        const prefab = this.testObjectPrefab;
+        if (!prefab) {
+            if (count > 0) console.warn('[StressTest] testObjectPrefab is missing; skip object generation');
             return;
         }
         for (let i = 0; i < count; i++) {
-            const obj = instantiate(this.testObjectPrefab);
+            const obj = instantiate(prefab);
             const angle = Math.random() * Math.PI * 2;
             const radius = Math.random() * this.spawnRadius;
             obj.setPosition(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
@@ -569,9 +1315,15 @@ export class StressTestController extends Component {
 
             this.currentObjects.push(obj);
         }
-        console.log('[StressTest] object count = ' + count);
+        if (count > 0) {
+            console.log('[StressTest] object count = ' + count);
+            console.warn('[StressTest] 已启用 CPU 负载（' + count + ' 个立方体，每帧 O(N) 遍历'
+                + (this.cpuWorkPerCube > 0 ? ' + ' + (count * this.cpuWorkPerCube) + ' 次浮点运算' : '')
+                + '）。这组数据反映 CPU 瓶颈，不要用来评估 GPU / 降分辨率收益。');
+        }
     }
 
+    /** 销毁所有立方体（下一次 generateObjects 会重建） */
     private clearObjects() {
         this.currentObjects.forEach(obj => {
             if (obj && obj.isValid) obj.destroy();

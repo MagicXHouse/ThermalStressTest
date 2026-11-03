@@ -1,0 +1,77 @@
+// 场景 A 专用：3D MeshRenderer 版本的 HeatShader。
+// 与 HeatShader.effect 的唯一区别：去掉 USE_LOCAL 分支，无条件做 cc_matWorld。
+// 原因：USE_LOCAL 只有 2D 组件（Sprite/Graphics/Particle2D）会 recompileShaders 打开，
+//      MeshRenderer 永远不会置位它 —— 原 effect 用在 3D 上会丢失世界变换。
+// 保留：additive 混合（blendDst=one，多层叠加累加）+ depthTest off（无 early-z，每层都真跑片元）
+//      + 512 次迭代的纯乘加依赖链（fill-rate / ALU 双敏感），这是"降分辨率收益"的来源。
+CCEffect %{
+  techniques:
+  - name: transparent
+    passes:
+    - vert: heat3d-vs:vert
+      frag: heat3d-fs:frag
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one          # 加法混合，多层会累加
+          blendDstAlpha: one
+      rasterizerState:
+        cullMode: none
+      properties:
+        # heatTint 由脚本按"层数"实时改写（1 层蓝 → 8 层红）；a 还会按层数做叠加补偿，
+        # 保证 N 层加法混合后的总亮度不变，颜色读数不被冲白。
+        heatTint: { value: [1.0, 0.35, 0.1, 0.55], editor: { type: color } }
+}%
+
+CCProgram heat3d-vs %{
+  precision highp float;
+  #include <builtin/uniforms/cc-global>
+  #include <builtin/uniforms/cc-local>
+
+  in vec3 a_position;
+  in vec2 a_texCoord;
+
+  out vec2 v_uv;
+
+  vec4 vert () {
+    v_uv = a_texCoord;
+    // 无条件世界变换：MeshRenderer 一定有 CCLocal 描述符集
+    return cc_matViewProj * (cc_matWorld * vec4(a_position, 1.0));
+  }
+}%
+
+CCProgram heat3d-fs %{
+  precision highp float;
+  #include <builtin/uniforms/cc-global>
+
+  uniform Constant {
+    vec4 heatTint;
+  };
+
+  in vec2 v_uv;
+
+  vec4 frag () {
+    vec2 uv = v_uv + vec2(cc_time.x * 0.05, -cc_time.x * 0.03);
+
+    // ALU 依赖链：纯乘加，饱和 ALU 管线（不用 sin/cos）。512 次迭代有意为之，
+    // 每像素成本固定且与分辨率无关 —— 所以片元数（= 像素量）就是 GPU 负载。
+    float x = fract(uv.x * 127.1 + uv.y * 311.7);
+    float y = fract(uv.y * 269.5 + uv.x * 183.3);
+    for (int i = 0; i < 512; i++) {
+      x = fract(x * 1.61803 + y * 0.75488 + 0.12345);
+      y = fract(y * 1.61803 + x * 0.75488 + 0.54321);
+    }
+
+    float t = clamp(x + y - 1.0, 0.0, 1.0);
+    vec3 cold = vec3(0.05, 0.10, 0.55);
+    vec3 hot  = vec3(1.0, 0.25, 0.05);
+    // heatTint 由脚本按"实时帧时间 / 帧预算"改写：压力低=蓝，压力高=红。
+    // 噪声只保留 15% 做质感，色相由 heatTint 主导，保证一眼能读出当前 GPU 压力。
+    vec3 col = mix(mix(cold, hot, t), heatTint.rgb, 0.85);
+    return vec4(col, heatTint.a);
+  }
+}%
