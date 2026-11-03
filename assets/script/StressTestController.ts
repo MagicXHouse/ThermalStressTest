@@ -140,6 +140,9 @@ export class StressTestController extends Component {
     @property({ tooltip: '分辨率地板：档位为 1.0 / 0.85 / 0.7 / 本值' })
     public thermalMinScale: number = 0.3;
 
+    @property({ tooltip: '温控预热时长（秒），会传给 thermal.warmupSeconds；同时作为"延后开始采样"的时长，避免预热期污染 baseline' })
+    public thermalWarmupSeconds: number = 20;
+
     // ==================== 场景 B：CPU 负载（立方体，数量 0 时完全不影响场景 A） ====================
 
     @property(Prefab)
@@ -276,14 +279,27 @@ export class StressTestController extends Component {
             } else {
                 console.log('[StressTest] thermal OFF (enableThermalControl = false)');
             }
-            // 采样与温控状态同生命周期：到这里温控才真正就绪
-            this.startLogging();
-            if (this.writeCsv) {
-                this.cleanOldCsv();
-                this.schedule(() => this._autoExport(), 60);
+
+            const beginSampling = () => {
+                // 采样与温控状态同生命周期：到这里温控才真正就绪
+                this.startLogging();
+                if (this.writeCsv) {
+                    this.cleanOldCsv();
+                    this.schedule(() => this._autoExport(), 60);
+                }
+                // A/B 验证：每 N 秒切一次 DRS（默认开，验收长测时关掉）
+                if (this.autoToggleDrs) this.startDrsToggle();
+            };
+
+            if (this.enableThermalControl && this.thermalWarmupSeconds > 0) {
+                // 温控有预热期（thermal.warmupSeconds），这期间不会做任何动作。
+                // 把这段排除在 CSV 之外，否则"已开温控但未动作"的前 N 秒会混进"温控开启"组的 baseline。
+                console.log('[StressTest] 温控预热 ' + this.thermalWarmupSeconds
+                    + 's 后才开始采样（预热期不计入 CSV）');
+                this.scheduleOnce(beginSampling, this.thermalWarmupSeconds);
+            } else {
+                beginSampling();
             }
-            // A/B 验证：每 N 秒切一次 DRS（默认开，验收长测时关掉）
-            if (this.autoToggleDrs) this.startDrsToggle();
         });
 
         (globalThis as any).stressTest = this;
@@ -1105,14 +1121,18 @@ export class StressTestController extends Component {
     private static readonly THERMAL_LEVEL_NAMES = ['Normal', 'Hot', 'Emergency'];
 
     /**
-     * 开启温控。降档顺序：先 shadingScale（这就是场景 A 要验证的杠杆），scale 到底后才降帧率。
-     * 触发条件：20s 滑动窗口的平均帧时间 ≥ 预算 × (1 + triggerPercent%)。
+     * 开启温控。杠杆顺序（引擎行为）：
+     *   降档：先 shadingScale（场景 A 要验证的杠杆），scale 到地板后才降帧率；
+     *   升档：先帧率，再分辨率（与降档相反）。
+     * 触发条件：20s 滑动窗口的平均帧时间 ≥ 预算 × (1 + triggerPercent%)；
+     * 另外前 thermalWarmupSeconds 秒是预热期，不会动作也不计入 CSV。
      */
     public thermalOn() {
         const cfg: any = {
             minFrameRate: this.thermalMinFrameRate,
             triggerPercent: this.thermalTriggerPercent,
             minScale: this.thermalMinScale,
+            warmupSeconds: this.thermalWarmupSeconds,
             enableScale: true,
             enableFsr: false,
         };
