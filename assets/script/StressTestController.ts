@@ -1,25 +1,15 @@
 import {
-    _decorator, Component, Node, Prefab, instantiate, profiler, Enum,
-    Toggle, Label, Vec3, Color, MeshRenderer, Camera,
-    director, game, thermal, cclegacy, Material,
+    _decorator, Component, Node, Prefab, profiler, Enum,
+    Toggle, Label, Camera,
+    director, game, thermal, cclegacy,
 } from 'cc';
 import { SliderBinder } from './SliderBinder';
 import { CsvRecorder } from './csv-recorder';
-import { HeatPlaneRig } from './heat-plane';
+import { HeatPlaneRig, TintMode } from './heat-plane';
 import { ThermalBridge } from './thermal-bridge';
 import { DrsProbe } from './drs-probe';
 import { CpuCubes } from './cpu-cubes';
 const { ccclass, property } = _decorator;
-
-/** HeatPlane 的着色依据 */
-enum TintMode {
-    /** 按层数（默认）：1 层蓝 → 8 层红。用于确认 GPU 负载滑块真的生效了 */
-    Load = 0,
-    /** 按实测帧时间：预算内蓝，超预算压力Range 红。用于观察温控降分辨率是否真的把压力降下来 */
-    Pressure = 1,
-    /** 不接管颜色，用材质里手调的颜色 */
-    Off = 2,
-}
 
 /**
  * 温控压测控制器：一个场景，两套压测，靠 spawnCount 切换。
@@ -186,20 +176,6 @@ export class StressTestController extends Component {
     /** 场景 B 的立方体（实现见 cpu-cubes.ts） */
     private cubes!: CpuCubes;
 
-    // ---- 压力着色（Pressure 模式）与层数着色（Load 模式）共用 ----
-    /** 帧时间指数滑动平均（ms），只有 Pressure 模式会更新 */
-    private _ftEma: number = 0;
-    /** 着色刷新节流（秒），4Hz */
-    private _tintTimer: number = 0;
-    /** 缓存 HeatPlane 的 sharedMaterial（所有副本共用这一个资产） */
-    private _tintMat: Material | null = null;
-    private _tintR: number = 255;
-    private _tintG: number = 89;
-    private _tintB: number = 26;
-    /** 单层 alpha（写材质时会按层数再除一次，做叠加补偿） */
-    private _tintA: number = 0.55;
-    /** Pressure 模式算出的压力值 0~1 */
-    private _pressureP: number = 0;
 
     /** DRS A/B 循环（实现见 drs-probe.ts） */
     private drs!: DrsProbe;
@@ -300,119 +276,22 @@ export class StressTestController extends Component {
 
         // Pressure 模式才需要逐帧采样；Load 模式（默认）颜色只跟层数走，这里零开销
         if (this.tintMode === TintMode.Pressure) {
-            this._updatePressureTint(dt);
+            this.planes.tickPressureTint(dt);
         }
 
         this.csv.tick();
     }
 
-    /**
-     * 统一入口：按 tintMode 算出 p（0=蓝, 1=红）再写材质。
-     * - Load 模式：p 只由层数决定（1 层=0，8 层=1）→ 拖滑块立刻变色，跟帧率无关，纯 UI 反馈。
-     * - Pressure 模式：p 由实测帧时间决定 → 能看出温控降分辨率是否真的把压力降下来。
-     */
-    private _updateTint(): void {
-        const mode = this.tintMode;
-        if (mode === TintMode.Off) return;
+    // ==================== 着色 —— 实现见 heat-plane.ts ====================
 
-        let p: number;
-        if (mode === TintMode.Load) {
-            p = (Math.max(1, this.planes.count) - 1) / 7;
-        } else {
-            p = this._pressureP;
-        }
-        p = p < 0 ? 0 : (p > 1 ? 1 : p);
+    /** 调试：当前着色算出了什么、材质有没有真的收到 */
+    public tintInfo(): any { return this.planes.tintInfo(); }
 
-        this._tintR = Math.round(40 + 215 * p);
-        this._tintG = Math.round(120 - 95 * p);
-        this._tintB = Math.round(255 - 220 * p);
-        this._tintA = 0.45 + 0.33 * p;
-        this._applyTint();
-    }
+    /** 调试：强制一个颜色，验证"颜色 → 材质 → 屏幕"链路 */
+    public testTint(r: number, g: number, b: number, a = 0.6): void { this.planes.testTint(r, g, b, a); }
 
-    /** Pressure 模式才会用到的逐帧采样（Load 模式下 update 根本不调用它） */
-    private _updatePressureTint(dt: number): void {
-        const ftMs = Math.min(dt * 1000, 100);   // 首帧/长卡顿钳制，避免闪一下红
-        this._ftEma = this._ftEma > 0 ? this._ftEma * 0.9 + ftMs * 0.1 : ftMs;
-
-        this._tintTimer += dt;
-        if (this._tintTimer < 0.25) return;      // 4Hz 足够，省掉无谓的 uniform 写入
-        this._tintTimer = 0;
-
-        const budget = 1000 / (Number(game.frameRate) || 60);
-        const range = Math.max(0.05, this.pressureRange);
-        const p = (this._ftEma / budget - 1) / range;
-        this._pressureP = p < 0 ? 0 : (p > 1 ? 1 : p);
-        this._updateTint();
-    }
-
-    /**
-     * 写材质颜色。关键是**按层数做 alpha 补偿**：N 层加法混合时每层 alpha 除以 N，
-     * 总亮度保持不变，颜色才不会被叠成纯白，蓝→红的读数在任何层数下都一致。
-     */
-    private _applyTint(): void {
-        if (this.tintMode === TintMode.Off) return;
-        const mat = this._tintMaterial();
-        if (!mat) return;
-        const layers = Math.max(1, this.planes.count);
-        const a = Math.max(8, Math.min(255, Math.round(this._tintA * 255 / layers)));
-        mat.setProperty('heatTint', new Color(this._tintR, this._tintG, this._tintB, a));
-    }
-
-    /** 调试：当前着色到底算出了什么、材质有没有真的收到。 */
-    public tintInfo() {
-        const mat = this._tintMaterial();
-        const got: any = mat ? mat.getProperty('heatTint', 0) : null;
-        const budget = 1000 / (Number(game.frameRate) || 60);
-        const loadP = (Math.max(1, this.planes.count) - 1) / 7;
-        const info = {
-            tintMode: TintMode[this.tintMode],
-            layers: this.planes.count,
-            computedP: Number((this.tintMode === TintMode.Load ? loadP : this._pressureP).toFixed(3)),
-            ftEmaMs: Number(this._ftEma.toFixed(2)),
-            budgetMs: Number(budget.toFixed(2)),
-            computedRGB: [this._tintR, this._tintG, this._tintB],
-            material: mat ? mat.name : 'NULL',
-            materialHeatTint: got ? { r: got.r, g: got.g, b: got.b, a: got.a } : 'NULL',
-        };
-        console.log('[StressTest] tintInfo: ' + JSON.stringify(info));
-        return info;
-    }
-
-    /**
-     * 调试：强制一个颜色，用来验证"颜色 → 材质 → 屏幕"这条链路是否通。
-     * 会切成 Off 模式，检查完记得 stressTest.setTintMode('load') 恢复。
-     */
-    public testTint(r: number, g: number, b: number, a = 0.6) {
-        this.tintMode = TintMode.Off;
-        const mat = this._tintMaterial();
-        if (!mat) { console.error('[StressTest] testTint: 拿不到材质'); return; }
-        mat.setProperty('heatTint', new Color(r, g, b, Math.round(a * 255)));
-        const got: any = mat.getProperty('heatTint', 0);
-        console.log('[StressTest] testTint -> rgb(' + r + ',' + g + ',' + b + '), 材质实际值=' +
-            (got ? 'rgb(' + got.r + ',' + got.g + ',' + got.b + ') a=' + got.a : 'NULL') +
-            '（已切到 Off，恢复：stressTest.setTintMode(\'load\')）');
-    }
-
-    /** 控制台切着色模式：'load'（默认，按层数）| 'pressure'（按实测帧时间）| 'off' */
-    public setTintMode(mode: string) {
-        const m = String(mode).toLowerCase();
-        this.tintMode = m === 'pressure' ? TintMode.Pressure
-            : (m === 'off' ? TintMode.Off : TintMode.Load);
-        this._updateTint();
-        console.log('[StressTest] tintMode = ' + TintMode[this.tintMode]);
-    }
-
-    /** 取 HeatPlane 的材质并缓存（用 sharedMaterial：所有副本共用同一个资产，改一次全变） */
-    private _tintMaterial(): Material | null {
-        if (this._tintMat && this._tintMat.isValid) return this._tintMat;
-        const tpl = this.heatPlane;
-        if (!tpl || !tpl.isValid) return null;
-        const mr = tpl.getComponent(MeshRenderer);
-        // 用 sharedMaterial：所有克隆平面共用同一个材质资产，改一次全变
-        this._tintMat = (mr && mr.sharedMaterial) ? mr.sharedMaterial : null;
-        return this._tintMat;
-    }
+    /** 控制台切着色模式：'load'（默认）| 'pressure' | 'off' */
+    public setTintMode(mode: string): void { this.planes.setTintMode(mode); }
 
     // ==================== 引用解析 ====================
 
