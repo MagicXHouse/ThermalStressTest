@@ -16,9 +16,9 @@
 ## 二、GPU压测逻辑
 
 - GPU 压测点是场景根节点下的 **3D 平面**（`HeatPlane`，MeshRenderer + Quad），材质 `Mat_HeatShader3D`。
-- 片元 shader（`HeatShader3D.effect`）是 512 次迭代纯乘加依赖链 + additive 混合 + depthTest off，每层都铺满全屏 → 负载 ≈ 层数 × 像素量。
+- 片元 shader（`HeatShader3D.effect`）是 64 次迭代纯乘加依赖链 + additive 混合 + depthTest off，每层都铺满全屏 → 负载 ≈ 层数 × 像素量。
 - **必须挂在 3D 相机渲染目标上**：`shadingScale`（降分辨率）只缩放 3D 相机，不缩放 Canvas(UI_2D)。挂在 Canvas 下的 2D Sprite 不吃降分辨率，测不出收益。
-- 场景 A 的 `update()` 里不能有遍历/矩阵运算——由 `spawnCount = 0` 保证（`currentObjects` 为空，动画循环一次都不进）。
+- 场景 A 的 `update()` 里不能有遍历/矩阵运算——由 `spawnCount = 0` 保证（立方体列表为空，动画循环一次都不进）。
 
 ## 三、温控开关与验证入口
 
