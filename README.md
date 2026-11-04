@@ -41,7 +41,7 @@ diag  : diagPlane() | diagFsr() | getStatus() | logStatus() | exportCsv() | prin
 
 ```
 elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jank_gt_2x,battery_pct,
-load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate
+load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate,drop_rate_cur
 ```
 
 | 字段 | 含义 |
@@ -50,9 +50,12 @@ load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate
 | `ft_p95_ms` / `ft_max_ms` | 95 分位 / 最慢一帧的帧时间 |
 | `jank_gt_2x` | 超过 2 倍预算（>33.3ms）的帧数，判真卡顿 |
 | `fps_std` | 窗口内逐帧 FPS 标准差（抖动） |
-| `drop_rate` | 帧时间 > 预算（16.667ms）的帧占比 % |
+| `drop_rate` | 相对**采样起点预算**（60fps → 16.667ms）的掉帧占比 %。口径固定，跨温控阶段可比 |
+| `drop_rate_cur` | 相对**当前目标帧率**（1000/game.frameRate）的掉帧占比 %。温控降帧后应用它判"当前档位稳不稳" |
 | `load_gpu_layers` | 实际参与压测的平面层数（历史列名，场景 A 用） |
 | `shading_scale` / `frame_rate` | 当前 DRS 档 / 帧率档 |
+
+> 两个掉帧率的口径不同，**不要混用**：温控把目标帧率降到 30 后，`drop_rate` 会因为预算仍是 16.667ms 而恒报 ~100%，但 `drop_rate_cur` 才是"当前档位下稳不稳"。判"温控后掉帧率有没有下降"用后者。
 
 CSV 通过 `wx.env.USER_DATA_PATH/thermal_<时间戳>.csv` 写入小游戏沙箱，每 60s 自动导出一次；`exportCsv()` 手动导出，`printCsv(n)` 在控制台直接打印最近 n 行。
 
@@ -63,7 +66,22 @@ CSV 通过 `wx.env.USER_DATA_PATH/thermal_<时间戳>.csv` 写入小游戏沙箱
 - Android：`monitor_temp.bat`（`adb dumpsys battery`，每 5s 一行 `Time,Temperature`）
 - iOS：`monitor_temp_ios.bat`（libimobiledevice / pymobiledevice3）
 
-## 六、目录结构
+## 六、数据分析与达标判定
+
+`tools/eval/_eval_thermal.py`：把温控前/后两组 CSV + 两份温度日志拉齐，按方案 §4.5 出判定。
+
+- **合入门槛（判定项）**：平均温度下降（核心）、掉帧率下降（用 `drop_rate_cur`）、帧率标准差下降
+- **仅参考（不判定）**：平均帧率、p95 帧时间 —— 降帧率杠杆下这两项天然恶化
+- 温度阈值 `TEMP_DROP_MIN`、抖动阈值 `STD_DROP_MIN` 在脚本顶部，实测后标定
+- 旧版 14 列 CSV 会走兼容分支：提示缺 `drop_rate_cur`，回退用 `drop_rate` 判并警告"结论可能误判"
+
+改脚本后跑一遍自测（合成数据，不需要真机）：
+
+```bash
+python tools/eval/selftest.py     # 覆盖 15 列正常口径 + 14 列兼容分支
+```
+
+## 七、目录结构
 
 ```
 assets/
@@ -76,4 +94,9 @@ assets/
   material/Mat_HeatShader3D.mtl   # HeatPlane 材质
   material/Mat_InstancedColor.mtl # Cube 材质
   resources/fsr/builtin-fsr.mtl   # FSR 材质
+tools/
+  device-monitor/                 # 宿主机温度采集（Android adb / iOS idevicediagnostics）
+  eval/_eval_thermal.py           # 温控前后 CSV + 温度日志 → 达标判定
+  eval/selftest.py                # 判定脚本的自测（合成数据）
+  module-tests/                   # 拆分后脚本模块的运行时断言（node + cc stub）
 ```
