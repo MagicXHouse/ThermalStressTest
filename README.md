@@ -57,7 +57,11 @@ load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate,drop_rate
 
 > 两个掉帧率的口径不同，**不要混用**：温控把目标帧率降到 30 后，`drop_rate` 会因为预算仍是 16.667ms 而恒报 ~100%，但 `drop_rate_cur` 才是"当前档位下稳不稳"。判"温控后掉帧率有没有下降"用后者。
 
-CSV 通过 `wx.env.USER_DATA_PATH/thermal_<时间戳>.csv` 写入小游戏沙箱，每 60s 自动导出一次；`exportCsv()` 手动导出，`printCsv(n)` 在控制台直接打印最近 n 行。
+CSV 写入小游戏沙箱 `wx.env.USER_DATA_PATH/`：
+
+- `thermal_latest.csv`：每 60s **覆盖写**的运行时快照（崩溃最多丢一个周期），文件名固定，不会堆一堆中间版本；
+- `thermal_A_<时间戳>.csv` / `thermal_B_<时间戳>.csv`：`exportCsv()` 手动导出的归档，A/B 由 `enableThermalControl` 决定（关=A，开=B），两轮数据可直接按文件名区分；
+- `printCsv(n)` 在控制台直接打印最近 n 行；每次启动会用 `cleanOldCsv()` 清掉上一次留下的 `thermal_*.csv`。
 
 ## 五、温度采集（宿主机侧）
 

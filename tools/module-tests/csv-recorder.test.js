@@ -136,6 +136,38 @@ check('stop 后 lastFps 仍可读（不清零）', rec.lastFps > 0, 'lastFps=' +
 rec.start();
 check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' + rec.rowCount);
 
+// --- 10) T07：定时快照用固定名覆盖写，归档导出带 A/B 标识 ---
+{
+    const written = [];
+    global.wx = {
+        env: { USER_DATA_PATH: '/vfs' },
+        getFileSystemManager: () => ({
+            writeFile: (o) => { written.push(o.filePath); if (o.success) o.success(); },
+        }),
+    };
+    const recW = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: true, _log: () => { } });
+    recW.start();
+    for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recW.tick(); }
+
+    recW.autoExport();
+    check('T07: autoExport 写固定名 thermal_latest.csv', written[written.length - 1] === '/vfs/thermal_latest.csv', written[written.length - 1]);
+
+    recW.exportCsv();
+    const arch = written[written.length - 1];
+    check('T07: 归档导出带 B 标识且带时间戳', /^\/vfs\/thermal_B_\d+\.csv$/.test(arch), arch);
+    check('T07: 归档导出不是 latest（两者分开）', arch !== '/vfs/thermal_latest.csv');
+
+    // A（温控关）应当写 thermal_A_*
+    const recA = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: false, _log: () => { } });
+    recA.start();
+    for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recA.tick(); }
+    recA.exportCsv();
+    const archA = written[written.length - 1];
+    check('T07: 温控关时归档带 A 标识', /^\/vfs\/thermal_A_\d+\.csv$/.test(archA), archA);
+
+    delete global.wx;
+}
+
 global.performance = realPerf;
 const failed = results.filter(r => !r.ok);
 console.log('\n==== 结果: ' + (results.length - failed.length) + '/' + results.length + ' 通过 ====');

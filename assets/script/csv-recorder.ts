@@ -29,6 +29,9 @@ import { game, director } from 'cc';
 export const CSV_HEADER = 'elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jank_gt_2x,battery_pct,load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate,drop_rate_cur';
 
 export class CsvRecorder {
+    /** 定时快照的固定文件名（覆盖写）：崩溃最多丢一个 60s 周期 */
+    private static readonly LATEST_FILE = 'thermal_latest.csv';
+
     /** 宿主控制器（用 any：拆模块时不引入类型环，且要读私有字段） */
     private _ctrl: any;
 
@@ -117,7 +120,11 @@ export class CsvRecorder {
         console.log('[StressTest][csv] rows=' + (total - 1) + '\n' + out.join('\n'));
     }
 
-    /** 写入小游戏沙箱（wx.env.USER_DATA_PATH/thermal_<时间戳>.csv）；非微信环境只打日志 */
+    /**
+     * 手动/归档导出：写入 `thermal_<A|B>_<时间戳>.csv`。
+     * A/B 取自 enableThermalControl（温控关 = baseline A，温控开 = B），避免两轮数据混在同一堆
+     * thermal_*.csv 里只能靠内容猜。
+     */
     public exportCsv (): void {
         if (!this._ctrl.writeCsv) {
             console.warn('[StressTest] writeCsv is off; skip file export');
@@ -127,25 +134,54 @@ export class CsvRecorder {
             console.warn('[StressTest] no CSV data');
             return;
         }
-        const csv = this._rows.join('\n');
         const wx = this._getWx();
-        if (wx && wx.getFileSystemManager) {
-            const fs = wx.getFileSystemManager();
-            const filePath = wx.env.USER_DATA_PATH + '/thermal_' + Date.now() + '.csv';
-            fs.writeFile({
-                filePath: filePath,
-                data: csv,
-                encoding: 'utf8',
-                success: () => {
-                    console.log('[StressTest] CSV exported: ' + filePath + ' (' + (this._rows.length - 1) + ' rows)');
-                },
-                fail: (err: any) => {
-                    console.error('[StressTest] CSV write failed', err);
-                }
-            });
-        } else {
+        if (!wx || !wx.getFileSystemManager) {
             console.log('[StressTest] CSV sampling (non-WeChat): ' + (this._rows.length - 1) + ' rows');
+            return;
         }
+        const tag = this._ctrl.enableThermalControl ? 'B' : 'A';
+        const name = 'thermal_' + tag + '_' + Date.now() + '.csv';
+        this._writeFile(name, this._rows.join('\n'), 'export');
+    }
+
+    /**
+     * 定时（60s）快照：**固定文件名覆盖写** thermal_latest.csv。
+     * 原来的写法是每 60s 新建一个带时间戳的全量文件，30 分钟会留下 30 份（12 行、24 行……360 行）
+     * 互相包含的副本，事后分不清该用哪份。固定名覆盖的代价是崩溃最多丢一个周期（60s），
+     * 这正是 autoExport 的初衷；需要归档时用 exportCsv()。
+     */
+    public autoExport (): void {
+        if (!this._ctrl.writeCsv) return;
+        if (this._rows.length <= 1) return;
+        const wx = this._getWx();
+        if (!wx || !wx.getFileSystemManager) {
+            console.log('[StressTest] CSV sampling (non-WeChat): ' + (this._rows.length - 1) + ' rows');
+            return;
+        }
+        this._writeFile(CsvRecorder.LATEST_FILE, this._rows.join('\n'), 'auto');
+    }
+
+    /** 统一的落盘封装（export 与 autoExport 共用） */
+    private _writeFile (name: string, data: string, kind: 'export' | 'auto'): void {
+        const wx = this._getWx();
+        const fs = wx.getFileSystemManager();
+        const filePath = wx.env.USER_DATA_PATH + '/' + name;
+        const rows = this._rows.length - 1;
+        fs.writeFile({
+            filePath: filePath,
+            data: data,
+            encoding: 'utf8',
+            success: () => {
+                if (kind === 'export') {
+                    console.log('[StressTest] CSV exported: ' + filePath + ' (' + rows + ' rows)');
+                } else {
+                    console.log('[StressTest] CSV snapshot -> latest (' + rows + ' rows)');
+                }
+            },
+            fail: (err: any) => {
+                console.error('[StressTest] CSV write failed', err);
+            }
+        });
     }
 
     /** 开跑前清掉沙箱里上一次留下的 thermal_*.csv，避免文件越堆越多 */
@@ -196,18 +232,6 @@ export class CsvRecorder {
                 this._ctrl._log('cleanOldCsv readdir failed: ' + JSON.stringify(err));
             }
         });
-    }
-
-    /** 定时（60s）自动导出一次，防止跑久了数据全在内存里丢失 */
-    public autoExport (): void {
-        if (!this._ctrl.writeCsv) return;
-        if (this._rows.length <= 1) return;
-        const wx = this._getWx();
-        if (wx && wx.getFileSystemManager) {
-            this.exportCsv();
-        } else {
-            console.log('[StressTest] CSV sampling (non-WeChat): ' + (this._rows.length - 1) + ' rows');
-        }
     }
 
     /**
