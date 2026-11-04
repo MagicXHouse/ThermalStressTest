@@ -1,10 +1,10 @@
-import { director, cclegacy, Material, resources, thermal } from 'cc';
+import { director, Material, resources, thermal } from 'cc';
 
 /** 温控三级档位的可读名字，与引擎 ThermalLevel 对应（0/1/2） */
 export const THERMAL_LEVEL_NAMES = ['Normal', 'Hot', 'Emergency'];
 
 /**
- * 引擎 thermal 模块的接线层：开关温控、手动升降档、改阈值、FSR 材质占位、FSR 链路诊断。
+ * 引擎 thermal 模块的接线层：开关温控、手动升降档、改阈值、FSR 材质、FSR 链路诊断。
  * 从 StressTestController 里拆出来的，行为与拆分前逐字一致。
  *
  * 参数仍来自控制器的面板字段（thermalMinFrameRate / thermalTriggerPercent / …），
@@ -12,7 +12,7 @@ export const THERMAL_LEVEL_NAMES = ['Normal', 'Hot', 'Emergency'];
  */
 export class ThermalBridge {
     private _ctrl: any;
-    /** FSR 升采样材质是否就绪（一期只加载占位，不真正启用） */
+    /** FSR 升采样材质是否就绪 */
     private _fsrReady = false;
 
     constructor (ctrl: any) {
@@ -22,7 +22,8 @@ export class ThermalBridge {
     public get fsrReady (): boolean { return this._fsrReady; }
 
     /**
-     * 一期纯降分辨率，不启用 FSR。此方法仅加载材质占位，二期启用 FSR 时再挂接。
+     * 加载 FSR 材质（`assets/resources/fsr/builtin-fsr.mtl`，指向自定义管线用的 `fsr1.effect`），
+     * 并交给 thermal（`setFsrMaterial`）。
      */
     public initFsr (done: () => void): void {
         if (typeof (thermal as any).setFsrMaterial !== 'function') {
@@ -38,7 +39,8 @@ export class ThermalBridge {
             }
             (thermal as any).setFsrMaterial(material);
             this._fsrReady = true;
-            console.log('[StressTest] FSR material loaded (phase-1 unused, pure downsampling): ' + material.name);
+            console.log('[StressTest] FSR material loaded: ' + material.name
+                + ' effect=' + (material.effectAsset ? material.effectAsset.name : '<null>'));
             done();
         });
     }
@@ -62,7 +64,8 @@ export class ThermalBridge {
             probeIntervalSeconds: c.probeIntervalSeconds,
             recoveryProbeSeconds: c.recoveryProbeSeconds,
             enableScale: true,
-            enableFsr: false,
+            // 降分辨率时同时开 FSR 升采样（否则降档就是纯降采样，画面会糊）
+            enableFsr: true,
         };
         thermal.enable(cfg);
         thermal.onLevelChange((level) => {
@@ -120,72 +123,48 @@ export class ThermalBridge {
     }
 
     /**
-     * 诊断 FSR 链路（custom pipeline 探针）：一次性把"降分辨率 + FSR 到底走哪条链路"的关键状态
-     * 全打出来。用来回答：thermal 写的 pipeline.shadingScale，和 custom pipeline 的 PostProcess/FSR
-     * 组件之间有没有联动、FSR 会不会真的升采样。
-     * 用法：编辑器预览里执行 `stressTest.diagFsr()` 。
+     * 诊断 FSR 链路：打印“降分辨率 + FSR 到底有没有被写进相机设置”的关键状态。
+     * 当前链路：thermal -> camera.pipelineSettings.fsr -> 自定义管线自带的 FSR pass。
+     * 用法：控制台执行 `stressTest.diagFsr()`。
      */
     public diagFsr (): any {
         const out: any = {};
 
-        // ① 当前管线类型
         const root: any = (director as any).root;
         const pipeline: any = root ? root.pipeline : null;
         out.pipelineClass = pipeline ? (pipeline.constructor ? pipeline.constructor.name : 'unknown') : 'null';
         out.pipelineShadingScale = pipeline ? Number((pipeline.shadingScale || 1).toFixed(3)) : 'n/a';
 
-        // ② 3D 相机及其 usePostProcess 状态
-        const cam = this._ctrl._findCamera();
-        out.cameraName = cam ? cam.node.name : 'null';
-        out.cameraUsePostProcess = cam ? !!(cam as any).usePostProcess : 'n/a';
-
-        // ③ PostProcess 组件（custom pipeline 的 FSR 必须挂在它上面）
-        const ppNode = cam ? cam.node : null;
-        const pp: any = ppNode ? ppNode.getComponent('cc.PostProcess') : null;
-        out.hasPostProcess = !!pp;
-        if (pp) {
-            out.postProcessShadingScale = Number((pp.shadingScale || 1).toFixed(3));
-            out.postProcessGlobal = !!pp.global;
-            out.postProcessEnabled = pp.enabledInHierarchy;
-            // FSR 是 PostProcessSetting 子类，onEnable 时会把自己 addSetting 进这个 Map。
-            // 组件挂上了但这里是 0，说明 FSR 没注册进 PostProcess，pass 不会执行。
-            out.postProcessSettingsCount = pp.settings ? pp.settings.size : 'n/a';
-        }
-
-        // ④ FSR 组件（PostProcessSetting 子类，requireComponent(PostProcess)，同节点）
-        const fsr: any = ppNode ? ppNode.getComponent('cc.FSR') : null;
-        out.hasFSR = !!fsr;
-        if (fsr) {
-            out.fsrSharpness = Number((fsr.sharpness || 0).toFixed(3));
-            out.fsrEnabled = fsr.enabledInHierarchy;
-        }
-
-        // ⑤ render-scene camera 上的 postProcess 字段（post-process-builder 读的是它）
-        if (cam) {
-            const rc: any = (cam as any).camera;
-            out.renderCameraPostProcess = rc && rc.postProcess
-                ? 'set(' + (rc.postProcess.constructor ? rc.postProcess.constructor.name : 'unknown') + ')'
-                : 'null';
-            out.renderCameraUsePostProcess = rc ? !!rc.usePostProcess : 'n/a';
-        }
-
-        // ⑥ PostProcess.all 静态数组（global PP 探测）
-        try {
-            const ccAny: any = cclegacy;
-            const PPCls: any = ccAny && ccAny.PostProcess;
-            if (PPCls && Array.isArray(PPCls.all)) {
-                out.postProcessAllCount = PPCls.all.length;
-                out.postProcessAll = PPCls.all.map((p: any) => ({
-                    global: !!p.global,
-                    enabled: p.enabledInHierarchy,
-                    node: p.node ? p.node.name : 'null',
-                }));
-            } else {
-                out.postProcessAll = 'cc.PostProcess 类型不可达（可能未导出或未挂载）';
+        // 3D 相机：FSR 设置挂在 camera.pipelineSettings.fsr 上（由 BuiltinPipelineSettings 提供）
+        const cam: any = this._ctrl._findCamera();
+        const rc: any = cam && cam.camera ? cam.camera : null;
+        out.cameraName = cam && cam.node ? cam.node.name : 'null';
+        out.hasBuiltinPipelineSettings = !!(cam && cam.node && cam.node.getComponent('BuiltinPipelineSettings'));
+        const settings: any = rc ? rc.pipelineSettings : null;
+        out.hasPipelineSettings = !!settings;
+        out.enableShadingScale = settings ? !!settings.enableShadingScale : 'n/a';
+        out.settingsShadingScale = settings ? Number(settings.shadingScale) : 'n/a';
+        out.fsr = settings && settings.fsr
+            ? {
+                enabled: !!settings.fsr.enabled,
+                sharpness: Number(settings.fsr.sharpness),
+                material: settings.fsr.material ? (settings.fsr.material.name || '<material>') : null,
+                materialEffect: settings.fsr.material && settings.fsr.material.effectAsset
+                    ? settings.fsr.material.effectAsset.name : null,
             }
-        } catch (e) {
-            out.postProcessAllError = String(e);
-        }
+            : null;
+
+        // thermal 侧状态（内部字段，仅供调试）
+        const fsrImpl: any = (thermal as any)._fsr;
+        out.thermalFsr = fsrImpl
+            ? {
+                enabled: !!fsrImpl._enabled,
+                minScale: fsrImpl._minScale,
+                lastScale: fsrImpl._lastScale,
+                warnedMaterial: !!fsrImpl._warnedMaterial,
+                warnedComponent: !!fsrImpl._warnedComponent,
+            }
+            : null;
 
         console.log('[StressTest][diagFsr]\n' + JSON.stringify(out, null, 2));
         return out;
