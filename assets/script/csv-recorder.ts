@@ -257,7 +257,7 @@ export class CsvRecorder {
             jank,
             this._getBatteryPct(),
             this._ctrl.planes.count,                 // load_gpu_layers：历史列名，场景 A 写"实际平面数"
-            this._ctrl.currentObjects.length,           // spawn_count：立方体数量
+            this._ctrl.cubes.count,                    // spawn_count：立方体数量
             shadingScale,
             String(game.frameRate),
             fpsStd.toFixed(2),
