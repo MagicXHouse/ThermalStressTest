@@ -4,6 +4,7 @@ import {
     director, screen, game, thermal, cclegacy, Material, resources,
 } from 'cc';
 import { SliderBinder } from './SliderBinder';
+import { CsvRecorder } from './csv-recorder';
 const { ccclass, property } = _decorator;
 
 /** HeatPlane 的着色依据 */
@@ -44,23 +45,6 @@ enum TintMode {
  *   数据: exportCsv() / printCsv(n) / getStatus() / logStatus() / tintInfo()
  */
 
-/** CSV 表头：列名与顺序保持历史兼容，不要改（已有分析脚本依赖它） */
-// elapsed_s     从 startLogging 起算的秒数（每行覆盖 5 秒窗口）
-// ts_ms         performance.now() 绝对时间戳，跟 adb 温度采样对齐用
-// fps           窗口平均帧率 = 1000 / ft_avg_ms
-// ft_avg_ms     窗口平均帧时间（核心指标）
-// ft_p95_ms     95 分位帧时间
-// ft_max_ms     窗口内最慢一帧
-// jank_gt_2x    超过 2 倍预算（>33.3ms）的帧数，判"真卡顿"用这列
-// battery_pct   电量百分比（wx.getBatteryInfoSync，非微信环境为 NA）
-// load_gpu_layers 实际参与压测的平面层数（历史列名，场景 A 专用）
-// spawn_count   立方体数量（场景 B 用）
-// shading_scale 当前 DRS 缩放档（温控降过档会变 0.85/0.7/0.3）
-// frame_rate    game.frameRate 帧率档位（不是实测 fps）
-// fps_std       窗口内逐帧 FPS 的标准差 = 抖动
-// drop_rate     超过预算（16.667ms）的帧占比 %；满帧时因 vsync 抖动会恒在 60% 左右，参考价值低
-const CSV_HEADER = 'elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jank_gt_2x,battery_pct,load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate';
-
 /** 单块平面的网格尺寸（局部空间全长），用于把平面缩放到刚好铺满相机视野 */
 interface PlaneExtents { x: number; y: number; z: number; }
 
@@ -80,7 +64,7 @@ export class StressTestController extends Component {
 
     // ==================== 场景 A 主负载：3D 满屏平面 ====================
 
-    @property({ type: Node, tooltip: '满屏平面模板（场景根节点下的 MeshRenderer，建议命名 HeatPlane；留空按名字自动找）' })
+    @property({ type: Node, tooltip: '满屏平面模板，对应场景里面的 HeatPlane' })
     public heatPlane: Node | null = null;
 
     @property({ range: [0, 8, 1], slide: true, tooltip: '平面层数：0 = 完全关掉 GPU 负载（平面隐藏、副本销毁）；N 层 ≈ N 倍全屏片元成本' })
@@ -227,30 +211,19 @@ export class StressTestController extends Component {
     /** 循环回调的稳定引用（unschedule 必须用同一个函数） */
     private _drsTick: (() => void) | null = null;
 
-    // ---- 帧时间自采 ----
-    /** 是否正在采集 */
-    private _sampling: boolean = false;
-    /** 上一帧的 performance.now()，用来算帧间隔 */
-    private _lastFrameNow: number = 0;
-    /** 当前 5 秒窗口的起点 */
-    private _windowStart: number = 0;
-    /** 当前窗口内的逐帧耗时（ms） */
-    private _windowFrames: number[] = [];
-    /** 已采集的 CSV 行（第 0 行是表头） */
-    private _csvRows: string[] = [];
-    /** 开始采集的时间戳 */
-    private _startTimestamp: number = 0;
-    /** 采样开始时刻的目标帧时间预算（ms），固定不随温控降帧漂移，用于 drop_rate/jank 判定 */
-    private _baseBudgetMs: number = 1000 / 60;
+    /** 帧时间采样 + CSV 记录（实现见 csv-recorder.ts） */
+    private csv!: CsvRecorder;
+
     /** FSR 升采样材质是否就绪 */
     private _fsrReady: boolean = false;
-    /** 最近一个完整窗口的平均 fps，给 getStatus 用 */
-    private _lastFps: number = 0;
+
 
     // ==================== 生命周期 ====================
 
     /** 绑定两条滑块（CPU 数量 / GPU 层数）并把引用解析成实际节点 */
     onLoad() {
+        this.csv = new CsvRecorder(this);
+        this.csv.onRow = () => this._updateDrsLabel();
         if (this.countSlider) {
             this.countSlider.setValue(this.spawnCount, true);
             this.countSlider.onChange((v) => this.setSpawnCount(v, true));
@@ -293,10 +266,10 @@ export class StressTestController extends Component {
 
             const beginSampling = () => {
                 // 采样与温控状态同生命周期：到这里温控才真正就绪
-                this.startLogging();
+                this.csv.start();
                 if (this.writeCsv) {
-                    this.cleanOldCsv();
-                    this.schedule(() => this._autoExport(), 60);
+                    this.csv.cleanOld();
+                    this.schedule(() => this.csv.autoExport(), 60);
                 }
                 // A/B 验证：每 N 秒切一次 DRS（默认开，验收长测时关掉）
                 if (this.autoToggleDrs) this.startDrsToggle();
@@ -338,17 +311,7 @@ export class StressTestController extends Component {
             this._updatePressureTint(dt);
         }
 
-        if (!this._sampling) return;
-        const now = performance.now();
-        if (this._lastFrameNow > 0) {
-            this._windowFrames.push(now - this._lastFrameNow);
-        }
-        this._lastFrameNow = now;
-        if (now - this._windowStart >= 5000) {   // 每 5 秒一行，跟 adb 温度采样对齐
-            this._flushCsvRow(now);
-            this._windowStart = now;
-            this._windowFrames.length = 0;
-        }
+        this.csv.tick();
     }
 
     /**
@@ -644,7 +607,7 @@ export class StressTestController extends Component {
      * 诊断 FSR 链路（custom pipeline 探针）：一次性把"降分辨率 + FSR 到底走哪条链路"的关键状态
      * 全打出来。用来回答：thermal 写的 pipeline.shadingScale，和 custom pipeline 的 PostProcess/FSR
      * 组件之间有没有联动、FSR 会不会真的升采样。
-     * 用法：编辑器预览里执行 `stressTest.diagFsr()`，把打印结果贴给督工。
+     * 用法：编辑器预览里执行 `stressTest.diagFsr()` 。
      */
     public diagFsr() {
         const out: any = {};
@@ -803,7 +766,7 @@ export class StressTestController extends Component {
     }
 
     /**
-     * 红线 1 的运行时自检：GPU 压测点必须在场景根下、layer 必须被 3D 相机可见。
+     * 运行时自检：GPU 压测点必须在场景根下、layer 必须被 3D 相机可见。
      * Canvas(UI_2D) 走独立 2D 通道、按原生分辨率渲染，挂在下面的节点不吃 shadingScale。
      */
     private _validatePlaneNode(node: Node): void {
@@ -1086,7 +1049,7 @@ export class StressTestController extends Component {
 
         this.setScale(to);
 
-        const fps = this._lastFps;
+        const fps = this.csv.lastFps;
         const ft = fps > 0 ? (1000 / fps) : 0;
         console.log('[StressTest] DRS ' + from.toFixed(2) + ' → ' + to.toFixed(2)
             + (fps > 0 ? ' | 上一档实测 ' + fps.toFixed(1) + 'fps (ft=' + ft.toFixed(2) + 'ms)' : ' | 测基线中…'));
@@ -1098,7 +1061,7 @@ export class StressTestController extends Component {
         if (!this.drsLabel) return;
         const pipeline = (director as any).root?.pipeline;
         const scale = pipeline ? Number(pipeline.shadingScale) : this._drsScale;
-        const fps = this._lastFps;
+        const fps = this.csv.lastFps;
         this.drsLabel.string = 'shadingScale ' + scale.toFixed(2)
             + (fps > 0 ? '   ' + fps.toFixed(1) + ' fps' : '');
     }
@@ -1244,255 +1207,41 @@ export class StressTestController extends Component {
             cubes: this.currentObjects.length,
             cpuWorkPerCube: this.cpuWorkPerCube,
             particleRate: this.particleRate,
-            fps: Number(this._lastFps.toFixed(1)),
+            fps: Number(this.csv.lastFps.toFixed(1)),
             frameRate: game.frameRate,
             shadingScale: pipeline ? Number(pipeline.shadingScale.toFixed(2)) : 'N/A',
             thermalLevel: state.level,
             thermalScale: Number(state.shadingScale),
-            sampling: this._sampling,
-            csvRows: this._csvRows.length,
+            sampling: this.csv.sampling,
+            csvRows: this.csv.rowCount,
         };
     }
 
-    // ==================== 帧时间自采（CSV 可选落盘）====================
+    // ==================== 帧时间自采（CSV）—— 实现见 csv-recorder.ts ====================
 
-    /** 开始采集：每 5 秒统计一行。会清空之前的所有行（含表头重建） */
-    public startLogging() {
-        this._sampling = true;
-        this._startTimestamp = performance.now();
-        this._windowStart = this._startTimestamp;
-        this._lastFrameNow = 0;
-        this._windowFrames.length = 0;
-        this._csvRows.length = 0;
-        this._csvRows.push(CSV_HEADER);
-        // 固定基准预算：drop_rate / jank 判定用采样开始时的目标帧率，不跟随温控降帧后实时 game.frameRate 漂移，
-        // 否则"温控前后"两段数据的掉帧率/卡顿次数不可比（阈值会从 16.667ms 漂到 33.33ms）。
-        this._baseBudgetMs = 1000 / (Number(game.frameRate) || 60);
-        console.log('[StressTest] frame-time sampling started (1 row / 5s, baseBudget=' + this._baseBudgetMs.toFixed(2) + 'ms, writeCsv=' + this.writeCsv + ')');
-    }
+    /** 开始采集（每 5 秒一行） */
+    public startLogging() { this.csv.start(); }
 
     /** 停止采集（已采集的行保留，仍可 exportCsv） */
-    public stopLogging() {
-        this._sampling = false;
-        console.log('[StressTest] sampling stopped; rows=' + (this._csvRows.length - 1));
-    }
+    public stopLogging() { this.csv.stop(); }
 
-    /**
-     * 把已采集的 CSV 打到控制台（真机排查用）。
-     * 微信真机调试窗口里执行 `stressTest.printCsv(12)` 就能看最近 12 行，直接复制走。
-     * @param lastN 只要最近 N 行；0 = 全部
-     */
-    public printCsv(lastN: number = 0) {
-        const total = this._csvRows.length;
-        if (total <= 1) {
-            console.warn('[StressTest] 还没有 CSV 数据');
-            return;
-        }
-        let out: string[];
-        if (lastN > 0 && lastN < total - 1) {
-            out = [this._csvRows[0]].concat(this._csvRows.slice(total - lastN));
-        } else {
-            out = this._csvRows;
-        }
-        console.log('[StressTest][csv] rows=' + (total - 1) + '\n' + out.join('\n'));
-    }
+    /** 把已采集的 CSV 打到控制台，lastN=0 表示全部 */
+    public printCsv(lastN: number = 0) { this.csv.printCsv(lastN); }
 
-    /**
-     * 把 CSV 写进小游戏沙箱（wx.env.USER_DATA_PATH/thermal_<时间戳>.csv）。
-     * 非微信环境（编辑器预览）只打日志，不落盘。
-     */
-    public exportCsv() {
-        if (!this.writeCsv) {
-            console.warn('[StressTest] writeCsv is off; skip file export');
-            return;
-        }
-        if (this._csvRows.length <= 1) {
-            console.warn('[StressTest] no CSV data');
-            return;
-        }
-        const csv = this._csvRows.join('\n');
-        const wx = this._getWx();
-        if (wx && wx.getFileSystemManager) {
-            const fs = wx.getFileSystemManager();
-            const filePath = wx.env.USER_DATA_PATH + '/thermal_' + Date.now() + '.csv';
-            fs.writeFile({
-                filePath: filePath,
-                data: csv,
-                encoding: 'utf8',
-                success: () => {
-                    console.log('[StressTest] CSV exported: ' + filePath + ' (' + (this._csvRows.length - 1) + ' rows)');
-                },
-                fail: (err: any) => {
-                    console.error('[StressTest] CSV write failed', err);
-                }
-            });
-        } else {
-            console.log('[StressTest] CSV sampling (non-WeChat): ' + (this._csvRows.length - 1) + ' rows');
-        }
-    }
+    /** 写入小游戏沙箱；非微信环境只打日志 */
+    public exportCsv() { this.csv.exportCsv(); }
 
-    /**
-     * 把当前 5 秒窗口的统计压成一行 CSV。
-     * drop_rate / jank 的判定预算固定为采样开始时的 _baseBudgetMs（不随温控降帧漂移，保证"温控前后"可比）。
-     * 注意 fps_std 用的是"逐帧 FPS 的标准差"，不是帧时间的标准差；drop_rate 在满帧时因 vsync 抖动
-     * 会虚高到 60% 左右，判卡顿请优先看 jank_gt_2x / ft_p95 / ft_max。
-     */
-    private _flushCsvRow(now: number) {
-        const frames = this._windowFrames;
-        const n = frames.length;
-        if (n === 0) return;
-        let sum = 0;
-        let max = 0;
-        for (let i = 0; i < n; i++) {
-            sum += frames[i];
-            if (frames[i] > max) max = frames[i];
-        }
-        const avg = sum / n;
-        const fps = 1000 / avg;
-        this._lastFps = fps;
-        this._updateDrsLabel();     // 屏幕档位数字每 5 秒跟着刷新一次
-        const sorted = frames.slice().sort((a, b) => a - b);
-        const p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))];
-        const budget = this._baseBudgetMs;
-        const budget2x = budget * 2;
-        let jank = 0;
-        let drop = 0;
-        let fpsSum = 0;
-        let fpsSumSq = 0;
-        for (let i = 0; i < n; i++) {
-            if (frames[i] > budget2x) jank++;
-            if (frames[i] > budget) drop++;
-            const f = 1000 / frames[i];
-            fpsSum += f;
-            fpsSumSq += f * f;
-        }
-        // 帧率标准差：5 秒窗口内逐帧 FPS 的标准差（单位 FPS）。
-        const meanFps = fpsSum / n;
-        const fpsStd = Math.sqrt(Math.max(0, fpsSumSq / n - meanFps * meanFps));
-        const dropRate = n > 0 ? (drop / n) * 100 : 0;
-        const pipeline = (director as any).root?.pipeline;
-        const shadingScale = pipeline ? pipeline.shadingScale.toFixed(2) : 'NA';
-        const elapsedS = (now - this._startTimestamp) / 1000;
-        const row = [
-            elapsedS.toFixed(1),
-            Math.floor(now),
-            fps.toFixed(1),
-            avg.toFixed(2),
-            p95.toFixed(2),
-            max.toFixed(2),
-            jank,
-            this._getBatteryPct(),
-            this._heatPlaneCount,               // load_gpu_layers：历史列名，场景 A 写"实际平面数"
-            this.currentObjects.length,         // spawn_count：立方体数量
-            shadingScale,
-            String(game.frameRate),
-            fpsStd.toFixed(2),
-            dropRate.toFixed(1)
-        ].join(',');
-        this._csvRows.push(row);
-        console.log('[StressTest] ' + row);
-    }
-
-    /** 小游戏内弹一个 toast（非微信环境只打日志） */
-    private _toast(msg: string) {
-        const wx = this._getWx();
-        if (wx && typeof wx.showToast === 'function') {
-            wx.showToast({ title: msg, icon: 'none', duration: 2500 });
-        }
-        console.log('[StressTest] ' + msg);
-    }
+    /** 开跑前清掉沙箱里上一次留下的 thermal_*.csv */
+    public cleanOldCsv() { this.csv.cleanOld(); }
 
     /** 关键事件日志：同时进 console 和微信实时日志（真机不接调试器也能事后看） */
     private _log(msg: string) {
         console.log('[StressTest] ' + msg);
-        const wx = this._getWx();
+        const g: any = typeof globalThis !== 'undefined' ? globalThis : {};
+        const wx = g.wx;
         if (wx && typeof wx.getRealtimeLogManager === 'function') {
-            try {
-                wx.getRealtimeLogManager().info(msg);
-            } catch (e) {
-                // ignore
-            }
+            try { wx.getRealtimeLogManager().info(msg); } catch (e) { /* ignore */ }
         }
-    }
-
-    /** 开跑前清掉沙箱里上一次留下的 thermal_*.csv，避免文件越堆越多 */
-    public cleanOldCsv(): void {
-        if (!this.writeCsv) {
-            console.log('[StressTest] writeCsv is off; skip cleanOldCsv');
-            return;
-        }
-        const wx = this._getWx();
-        if (!wx || !wx.getFileSystemManager || !wx.env) {
-            console.log('[StressTest] cleanOldCsv: not in WeChat');
-            return;
-        }
-        const fs = wx.getFileSystemManager();
-        const dir = wx.env.USER_DATA_PATH;
-        fs.readdir({
-            dirPath: dir,
-            success: (res: any) => {
-                const names: string[] = (res.files || []).filter((n: string) => /^thermal_.*[.](csv|xls)$/.test(n));
-                if (names.length === 0) {
-                    this._log('cleanOldCsv: no old thermal files');
-                    return;
-                }
-                let pending = names.length;
-                let removed = 0;
-                const done = () => {
-                    pending -= 1;
-                    if (pending > 0) return;
-                    this._log('cleanOldCsv: removed ' + removed + '/' + names.length);
-                    this._toast('清理旧CSV ' + removed + ' 个');
-                };
-                names.forEach((name: string) => {
-                    fs.unlink({
-                        filePath: dir + '/' + name,
-                        success: () => {
-                            removed += 1;
-                            done();
-                        },
-                        fail: (err: any) => {
-                            this._log('cleanOldCsv unlink failed: ' + name + ' ' + JSON.stringify(err));
-                            done();
-                        }
-                    });
-                });
-            },
-            fail: (err: any) => {
-                console.error('[StressTest] cleanOldCsv readdir failed', err);
-                this._log('cleanOldCsv readdir failed: ' + JSON.stringify(err));
-            }
-        });
-    }
-
-    /** 定时（60s）自动导出一次，防止跑久了数据全在内存里丢失 */
-    private _autoExport() {
-        if (!this.writeCsv) return;
-        if (this._csvRows.length <= 1) return;
-        const wx = this._getWx();
-        if (wx && wx.getFileSystemManager) {
-            this.exportCsv();
-        } else {
-            console.log('[StressTest] CSV sampling (non-WeChat): ' + (this._csvRows.length - 1) + ' rows');
-        }
-    }
-
-    /** 取微信全局对象（编辑器预览里是 undefined） */
-    private _getWx(): any {
-        const g: any = typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : {});
-        return g.wx;
-    }
-
-    /** 电量百分比，取不到返回 'NA'（编辑器预览必然是 NA） */
-    private _getBatteryPct(): string {
-        try {
-            const wx = this._getWx();
-            if (wx && wx.getBatteryInfoSync) {
-                const info = wx.getBatteryInfoSync();
-                if (info && typeof info.level === 'number') return String(info.level);
-            }
-        } catch (e) { }
-        return 'NA';
     }
 
     // ==================== 场景 B：立方体（CPU 负载） ====================
