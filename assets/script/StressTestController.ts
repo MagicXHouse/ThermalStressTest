@@ -106,7 +106,7 @@ export class StressTestController extends Component {
 
     // ==================== 温控参数 ====================
 
-    @property({ tooltip: '降档后允许的最低帧率' })
+    @property({ tooltip: '降档后允许的最低帧率。设成 60 = 钉住帧率（只让温控降分辨率）；45/40 这类非整数因子会被引擎回落到 30' })
     public thermalMinFrameRate: number = 30;
 
     @property({ tooltip: '降档触发阈值(%)：60fps 目标下 10% ⇒ 实测低于 54.5fps 才降档' })
