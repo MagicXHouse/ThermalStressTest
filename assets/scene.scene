@@ -340,6 +340,7 @@
     "enableAutoUpgrade": false,
     "probeIntervalSeconds": 60,
     "recoveryProbeSeconds": 15,
+    "downgradeOrder": 0,
     "testObjectPrefab": {
       "__uuid__": "95d708e7-cd4e-4fdf-bdbb-4bd05bad6840",
       "__expectedType__": "cc.Prefab"

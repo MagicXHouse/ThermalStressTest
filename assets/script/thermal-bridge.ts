@@ -4,6 +4,17 @@ import { director, Material, resources, thermal } from 'cc';
 export const THERMAL_LEVEL_NAMES = ['Normal', 'Hot', 'Emergency'];
 
 /**
+ * 降档顺序预设（对应引擎 ThermalConfig.downgradeOrder）。
+ * 只有开发商清楚自己的游戏对分辨率还是对帧率更敏感，所以这个是开放项。
+ */
+export enum DowngradeOrder {
+    /** 先降分辨率（默认）：3D 画面为主、对糊不敏感的游戏 */
+    ScaleFirst = 0,
+    /** 先降帧率：2D/UI 为主、分辨率降了没用（Canvas 不跟着缩放）的游戏 */
+    FrameRateFirst = 1,
+}
+
+/**
  * 引擎 thermal 模块的接线层：开关温控、手动升降档、改阈值、FSR 材质、FSR 链路诊断。
  * 从 StressTestController 里拆出来的，行为与拆分前逐字一致。
  *
@@ -63,6 +74,8 @@ export class ThermalBridge {
             enableAutoUpgrade: c.enableAutoUpgrade,
             probeIntervalSeconds: c.probeIntervalSeconds,
             recoveryProbeSeconds: c.recoveryProbeSeconds,
+            // 降档顺序是开放项：先降分辨率（默认）还是先降帧率，由面板决定
+            downgradeOrder: c.downgradeOrder === DowngradeOrder.FrameRateFirst ? 'frameRate-first' : 'scale-first',
             enableScale: true,
             // 降分辨率时同时开 FSR 升采样（否则降档就是纯降采样，画面会糊）
             enableFsr: true,

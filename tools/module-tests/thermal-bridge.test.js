@@ -59,7 +59,7 @@ function check(name, cond, detail) {
     console.log((cond ? 'PASS  ' : 'FAIL  ') + name + (detail ? '  [' + detail + ']' : ''));
 }
 
-const { ThermalBridge, THERMAL_LEVEL_NAMES } = loadTs(path.resolve(__dirname, '../../assets/script/thermal-bridge.ts'));
+const { ThermalBridge, THERMAL_LEVEL_NAMES, DowngradeOrder } = loadTs(path.resolve(__dirname, '../../assets/script/thermal-bridge.ts'));
 
 const ctrl = {
     thermalMinFrameRate: 30,
@@ -90,7 +90,17 @@ check('cfg.enableAutoUpgrade 透传', cfg.enableAutoUpgrade === true);
 check('cfg.probeIntervalSeconds 透传', cfg.probeIntervalSeconds === 45);
 check('cfg.recoveryProbeSeconds 透传', cfg.recoveryProbeSeconds === 12);
 check('cfg.enableFsr = true（31eb2d2 起项目启用 FSR，依赖 custom-pipeline-builtin-scripts）', cfg.enableFsr === true);
+check('cfg.downgradeOrder 默认 scale-first', cfg.downgradeOrder === 'scale-first');
 check('挂了 levelChange + action 回调', calls.levelChange === 1 && calls.action === 1);
+check('DowngradeOrder 枚举: ScaleFirst=0 / FrameRateFirst=1', DowngradeOrder.ScaleFirst === 0 && DowngradeOrder.FrameRateFirst === 1);
+
+// 面板切到 FrameRateFirst 时应透传 frameRate-first
+ctrl.downgradeOrder = DowngradeOrder.FrameRateFirst;
+const calls2 = { enable: [] };
+thermalStub.enable = (c2) => { calls2.enable.push(c2); };
+const bridge2 = new ThermalBridge(ctrl);
+bridge2.on();
+check('cfg.downgradeOrder 切到 frameRate-first', calls2.enable[0] && calls2.enable[0].downgradeOrder === 'frameRate-first', calls2.enable[0] ? calls2.enable[0].downgradeOrder : 'none');
 
 bridge.off();
 check('off 调用 thermal.disable', calls.disable === 1);

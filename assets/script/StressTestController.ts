@@ -6,7 +6,7 @@ import {
 import { SliderBinder } from './SliderBinder';
 import { CsvRecorder } from './csv-recorder';
 import { HeatPlaneRig, TintMode } from './heat-plane';
-import { ThermalBridge } from './thermal-bridge';
+import { ThermalBridge, DowngradeOrder } from './thermal-bridge';
 import { DrsProbe } from './drs-probe';
 import { CpuCubes } from './cpu-cubes';
 const { ccclass, property } = _decorator;
@@ -128,6 +128,9 @@ export class StressTestController extends Component {
 
     @property({ tooltip: '升档后观察多久判定成败（秒）；成功则立即继续下一档' })
     public recoveryProbeSeconds: number = 15;
+
+    @property({ type: Enum(DowngradeOrder), tooltip: '降档顺序：ScaleFirst=先降分辨率（默认）/ FrameRateFirst=先降帧率（2D/UI 主导的游戏）' })
+    public downgradeOrder: DowngradeOrder = DowngradeOrder.ScaleFirst;
 
     // ==================== 场景 B：CPU 负载（立方体，数量 0 时完全不影响场景 A） ====================
 
