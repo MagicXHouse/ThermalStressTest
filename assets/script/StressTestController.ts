@@ -1,11 +1,12 @@
 import {
     _decorator, Component, Node, Prefab, instantiate, profiler, Enum,
-    Toggle, Label, Vec3, Vec4, Quat, Color, MeshRenderer, ParticleSystem, Camera, Canvas, Layers,
-    director, screen, game, thermal, cclegacy, Material, resources,
+    Toggle, Label, Vec3, Color, MeshRenderer, Camera,
+    director, game, thermal, cclegacy, Material,
 } from 'cc';
 import { SliderBinder } from './SliderBinder';
 import { CsvRecorder } from './csv-recorder';
 import { HeatPlaneRig } from './heat-plane';
+import { ThermalBridge } from './thermal-bridge';
 const { ccclass, property } = _decorator;
 
 /** HeatPlane 的着色依据 */
@@ -177,6 +178,9 @@ export class StressTestController extends Component {
 
     /** 场景 A 的平面负载装置（实现见 heat-plane.ts） */
     private planes!: HeatPlaneRig;
+
+    /** 引擎 thermal 的接线层（实现见 thermal-bridge.ts） */
+    private thermalBridge!: ThermalBridge;
     /** 场景 B 的立方体节点 */
     private currentObjects: Node[] = [];
     /** 颜色切换节流计数（帧） */
@@ -210,8 +214,6 @@ export class StressTestController extends Component {
     /** 帧时间采样 + CSV 记录（实现见 csv-recorder.ts） */
     private csv!: CsvRecorder;
 
-    /** FSR 升采样材质是否就绪 */
-    private _fsrReady: boolean = false;
 
 
     // ==================== 生命周期 ====================
@@ -220,6 +222,7 @@ export class StressTestController extends Component {
     onLoad() {
         this.csv = new CsvRecorder(this);
         this.planes = new HeatPlaneRig(this);
+        this.thermalBridge = new ThermalBridge(this);
         this.csv.onRow = () => this._updateDrsLabel();
         if (this.countSlider) {
             this.countSlider.setValue(this.spawnCount, true);
@@ -254,7 +257,7 @@ export class StressTestController extends Component {
         if (this.planes.count > 0) this.diagPlane();   // 只在启动时打一次，拖滑块不会刷屏
 
         // FSR 材质必须先就绪，否则第一次降分辨率会"糊着降"（没有升采样）
-        this._initFsr(() => {
+        this.thermalBridge.initFsr(() => {
             if (this.enableThermalControl) {
                 this.thermalOn();
             } else {
@@ -531,77 +534,8 @@ export class StressTestController extends Component {
     /** 平面自检：在不在视野、有没有网格、材质对不对 */
     public diagPlane(): boolean { return this.planes.diag(); }
 
-    /**
-     * 诊断 FSR 链路（custom pipeline 探针）：一次性把"降分辨率 + FSR 到底走哪条链路"的关键状态
-     * 全打出来。用来回答：thermal 写的 pipeline.shadingScale，和 custom pipeline 的 PostProcess/FSR
-     * 组件之间有没有联动、FSR 会不会真的升采样。
-     * 用法：编辑器预览里执行 `stressTest.diagFsr()` 。
-     */
-    public diagFsr() {
-        const out: any = {};
-
-        // ① 当前管线类型
-        const root: any = (director as any).root;
-        const pipeline: any = root ? root.pipeline : null;
-        out.pipelineClass = pipeline ? (pipeline.constructor ? pipeline.constructor.name : 'unknown') : 'null';
-        out.pipelineShadingScale = pipeline ? Number((pipeline.shadingScale || 1).toFixed(3)) : 'n/a';
-
-        // ② 3D 相机及其 usePostProcess 状态
-        const cam = this._findCamera();
-        out.cameraName = cam ? cam.node.name : 'null';
-        out.cameraUsePostProcess = cam ? !!(cam as any).usePostProcess : 'n/a';
-
-        // ③ PostProcess 组件（custom pipeline 的 FSR 必须挂在它上面）
-        const ppNode = cam ? cam.node : null;
-        const pp: any = ppNode ? ppNode.getComponent('cc.PostProcess') : null;
-        out.hasPostProcess = !!pp;
-        if (pp) {
-            out.postProcessShadingScale = Number((pp.shadingScale || 1).toFixed(3));
-            out.postProcessGlobal = !!pp.global;
-            out.postProcessEnabled = pp.enabledInHierarchy;
-            // FSR 是 PostProcessSetting 子类，onEnable 时会把自己 addSetting 进这个 Map。
-            // 组件挂上了但这里是 0，说明 FSR 没注册进 PostProcess，pass 不会执行。
-            out.postProcessSettingsCount = pp.settings ? pp.settings.size : 'n/a';
-        }
-
-        // ④ FSR 组件（PostProcessSetting 子类，requireComponent(PostProcess)，同节点）
-        const fsr: any = ppNode ? ppNode.getComponent('cc.FSR') : null;
-        out.hasFSR = !!fsr;
-        if (fsr) {
-            out.fsrSharpness = Number((fsr.sharpness || 0).toFixed(3));
-            out.fsrEnabled = fsr.enabledInHierarchy;
-        }
-
-        // ⑤ render-scene camera 上的 postProcess 字段（post-process-builder 读的是它）
-        if (cam) {
-            const rc: any = (cam as any).camera;
-            out.renderCameraPostProcess = rc && rc.postProcess
-                ? 'set(' + (rc.postProcess.constructor ? rc.postProcess.constructor.name : 'unknown') + ')'
-                : 'null';
-            out.renderCameraUsePostProcess = rc ? !!rc.usePostProcess : 'n/a';
-        }
-
-        // ⑥ PostProcess.all 静态数组（global PP 探测）
-        try {
-            const ccAny: any = cclegacy;
-            const PPCls: any = ccAny && ccAny.PostProcess;
-            if (PPCls && Array.isArray(PPCls.all)) {
-                out.postProcessAllCount = PPCls.all.length;
-                out.postProcessAll = PPCls.all.map((p: any) => ({
-                    global: !!p.global,
-                    enabled: p.enabledInHierarchy,
-                    node: p.node ? p.node.name : 'null',
-                }));
-            } else {
-                out.postProcessAll = 'cc.PostProcess 类型不可达（可能未导出或未挂载）';
-            }
-        } catch (e) {
-            out.postProcessAllError = String(e);
-        }
-
-        console.log('[StressTest][diagFsr]\n' + JSON.stringify(out, null, 2));
-        return out;
-    }
+    /** 诊断 FSR 链路（custom pipeline 探针） */
+    public diagFsr() { return this.thermalBridge.diagFsr(); }
 
     /** GPU 负载滑块：叠加层数 0~8（不改平面大小） */
     public setHeatPlaneCount(count: number): void { this.planes.setCount(count); }
@@ -658,7 +592,7 @@ export class StressTestController extends Component {
         cclegacy.rendering?.forceResizeAllWindows?.();
         console.log('[StressTest] shadingScale = ' + scale.toFixed(2)
             + ' (readback ' + (pipeline ? pipeline.shadingScale.toFixed(2) : 'N/A')
-            + '), FSR=' + (this._fsrReady ? 'READY' : 'PENDING'));
+            + '), FSR=' + (this.thermalBridge.fsrReady ? 'READY' : 'PENDING'));
         this._updateDrsLabel();
     }
 
@@ -745,108 +679,25 @@ export class StressTestController extends Component {
             + (fps > 0 ? '   ' + fps.toFixed(1) + ' fps' : '');
     }
 
-    // ==================== FSR (builtin pipeline) ====================
+    // ==================== 温控 / FSR —— 实现见 thermal-bridge.ts ====================
 
-    /**
-     * 一期纯降分辨率，不启用 FSR。此方法仅加载材质占位，二期启用 FSR 时再挂接。
-     */
-    private _initFsr(done: () => void) {
-        if (typeof (thermal as any).setFsrMaterial !== 'function') {
-            console.warn('[StressTest] thermal.setFsrMaterial is unavailable; rebuild the custom engine to enable FSR.');
-            done();
-            return;
-        }
-        resources.load('fsr/builtin-fsr', Material, (err, material) => {
-            if (err || !material) {
-                console.error('[StressTest] FSR material load failed', err);
-                done();
-                return;
-            }
-            (thermal as any).setFsrMaterial(material);
-            this._fsrReady = true;
-            console.log('[StressTest] FSR material loaded (phase-1 unused, pure downsampling): ' + material.name);
-            done();
-        });
-    }
-
-    // ==================== 温控（引擎 thermal 模块）====================
-
-    private static readonly THERMAL_LEVEL_NAMES = ['Normal', 'Hot', 'Emergency'];
-
-    /**
-     * 开启温控。杠杆顺序（引擎行为）：
-     *   降档：先 shadingScale（场景 A 要验证的杠杆），scale 到地板后才降帧率；
-     *   自动试探升档（enableAutoUpgrade=true）：先分辨率，scale 升满后再升帧率；
-     *   手动 stepUp()：先帧率，再分辨率。
-     * 触发条件：20s 滑动窗口的平均帧时间 ≥ 预算 × (1 + triggerPercent%)；
-     * 另外前 thermalWarmupSeconds 秒是预热期，不会动作也不计入 CSV。
-     */
-    public thermalOn() {
-        const cfg: any = {
-            minFrameRate: this.thermalMinFrameRate,
-            triggerPercent: this.thermalTriggerPercent,
-            minScale: this.thermalMinScale,
-            warmupSeconds: this.thermalWarmupSeconds,
-            enableAutoUpgrade: this.enableAutoUpgrade,
-            probeIntervalSeconds: this.probeIntervalSeconds,
-            recoveryProbeSeconds: this.recoveryProbeSeconds,
-            enableScale: true,
-            enableFsr: false,
-        };
-        thermal.enable(cfg);
-        thermal.onLevelChange((level) => {
-            console.log('[StressTest] thermal level changed -> ' + StressTestController.THERMAL_LEVEL_NAMES[level]);
-        });
-        if (typeof (thermal as any).onAction === 'function') {
-            (thermal as any).onAction((e: any) => {
-                this._log('thermal ' + e.direction + ' ' + e.lever + ' ' + e.from + ' -> ' + e.to
-                    + ' level=' + e.level
-                    + (e.avgMs && e.targetMs ? (' avg=' + e.avgMs.toFixed(2) + 'ms target=' + e.targetMs.toFixed(2) + 'ms') : ''));
-            });
-        }
-        const state = thermal.getState();
-        console.log('[StressTest] thermal ON: level=' + state.level
-            + ', scale=' + Number(state.shadingScale).toFixed(2)
-            + ', fps=' + state.frameRate
-            + ', trigger=' + this.thermalTriggerPercent + '%'
-            + ', FSR=' + (this._fsrReady ? 'READY' : 'PENDING'));
-    }
+    /** 开启温控 */
+    public thermalOn() { this.thermalBridge.on(); }
 
     /** 关闭温控，帧率/分辨率还原 */
-    public thermalOff() {
-        thermal.disable();
-        console.log('[StressTest] thermal OFF; frame rate and scale restored');
-    }
+    public thermalOff() { this.thermalBridge.off(); }
 
     /** 手动降一档（走 ScaleAction 优先） */
-    public thermalDown(): boolean {
-        const ok = thermal.stepDown();
-        console.log('[StressTest] manual thermal down: ' + (ok ? 'ok' : 'floor')
-            + '; level=' + StressTestController.THERMAL_LEVEL_NAMES[thermal.getLevel()]);
-        return ok;
-    }
+    public thermalDown(): boolean { return this.thermalBridge.down(); }
 
     /** 手动升一档 */
-    public thermalUp(): boolean {
-        const ok = thermal.stepUp();
-        console.log('[StressTest] manual thermal up: ' + (ok ? 'ok' : 'top')
-            + '; level=' + StressTestController.THERMAL_LEVEL_NAMES[thermal.getLevel()]);
-        return ok;
-    }
+    public thermalUp(): boolean { return this.thermalBridge.up(); }
 
     /** 读当前温控档位 */
-    public thermalLevel(): number {
-        const level = thermal.getLevel();
-        console.log('[StressTest] thermal level: ' + StressTestController.THERMAL_LEVEL_NAMES[level] + ' (' + level + ')');
-        return level;
-    }
+    public thermalLevel(): number { return this.thermalBridge.level(); }
 
     /** 运行时改降档阈值（%），真机上调"多容易触发降档"，不用重新构建 */
-    public setTriggerPercent(percent: number) {
-        this.thermalTriggerPercent = percent;
-        (thermal as any).setThreshold?.(percent);
-        console.log('[StressTest] thermal triggerPercent = ' + percent + '%');
-    }
+    public setTriggerPercent(percent: number): void { this.thermalBridge.setTriggerPercent(percent); }
 
     // ==================== UI 回调 ====================
 
