@@ -22,7 +22,11 @@ import { game, director } from 'cc';
 // frame_rate    game.frameRate 帧率档位（不是实测 fps）
 // fps_std       窗口内逐帧 FPS 的标准差 = 抖动
 // drop_rate     超过预算的帧占比 %；满帧时因 vsync 抖动会恒在 60% 左右，参考价值低
-export const CSV_HEADER = 'elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jank_gt_2x,battery_pct,load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate';
+// drop_rate     超过"采样起点预算"的帧占比 %。口径固定，跨温控阶段可比；但目标帧率被降档后
+//               满载帧也会被算成掉帧，判"当前档位稳不稳"请用最后一列
+// drop_rate_cur 超过"当前目标帧率（1000/game.frameRate）"的帧占比 %。温控降帧后它应当下降，
+//               这是场景 B「温控后掉帧率下降」这条门槛的判据
+export const CSV_HEADER = 'elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jank_gt_2x,battery_pct,load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate,drop_rate_cur';
 
 export class CsvRecorder {
     /** 宿主控制器（用 any：拆模块时不引入类型环，且要读私有字段） */
@@ -230,13 +234,19 @@ export class CsvRecorder {
         const p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))];
         const budget = this._baseBudgetMs;
         const budget2x = budget * 2;
+        // T04：drop_rate 用的是"采样起点的固定预算"，跨温控阶段可比，但目标帧率本身被降到 30 之后，
+        // 满载的 33.3ms 帧会被算成 100% 掉帧（看起来"温控后掉帧率反而暴涨"）。
+        // 所以额外输出 drop_rate_cur：预算取**当前** game.frameRate，用于判断"当前档位下稳不稳"。
+        const curBudget = 1000 / (Number(game.frameRate) || 60);
         let jank = 0;
         let drop = 0;
+        let dropCur = 0;
         let fpsSum = 0;
         let fpsSumSq = 0;
         for (let i = 0; i < n; i++) {
             if (frames[i] > budget2x) jank++;
             if (frames[i] > budget) drop++;
+            if (frames[i] > curBudget) dropCur++;
             const f = 1000 / frames[i];
             fpsSum += f;
             fpsSumSq += f * f;
@@ -244,6 +254,7 @@ export class CsvRecorder {
         const meanFps = fpsSum / n;
         const fpsStd = Math.sqrt(Math.max(0, fpsSumSq / n - meanFps * meanFps));
         const dropRate = n > 0 ? (drop / n) * 100 : 0;
+        const dropRateCur = n > 0 ? (dropCur / n) * 100 : 0;
         const pipeline = (director as any).root?.pipeline;
         const shadingScale = pipeline ? pipeline.shadingScale.toFixed(2) : 'NA';
         const elapsedS = (now - this._startTimestamp) / 1000;
@@ -261,7 +272,8 @@ export class CsvRecorder {
             shadingScale,
             String(game.frameRate),
             fpsStd.toFixed(2),
-            dropRate.toFixed(1)
+            dropRate.toFixed(1),
+            dropRateCur.toFixed(1)                     // drop_rate_cur：相对"当前"目标帧率的掉帧率
         ].join(',');
         this._rows.push(row);
         console.log('[StressTest] ' + row);

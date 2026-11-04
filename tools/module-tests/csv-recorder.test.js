@@ -51,7 +51,7 @@ const { CsvRecorder, CSV_HEADER } = loadTs(file);
 
 // --- 1) 表头 ---
 const cols = CSV_HEADER.split(',');
-check('CSV 表头为 14 列且顺序不变', cols.length === 14 && cols[0] === 'elapsed_s' && cols[13] === 'drop_rate', cols.length + ' 列');
+check('CSV 表头为 15 列且顺序不变', cols.length === 15 && cols[0] === 'elapsed_s' && cols[13] === 'drop_rate' && cols[14] === 'drop_rate_cur', cols.length + ' 列');
 
 // --- 2) 构造与初始状态 ---
 const ctrl = { writeCsv: false, planes: { count: 3 }, cubes: { count: 5 }, _log: () => { } };
@@ -86,8 +86,8 @@ let captured = [];
 console.log = (...args) => { captured.push(args.join(' ')); };
 for (let t = 0; t < 5100; t += 16) { fakeNow += 16; rec.tick(); }
 console.log = origLog;
-const dataLines = captured.filter(l => l.startsWith('[StressTest] ') && !l.includes('frame-time sampling') && l.split(',').length === 14);
-check('第 2 行同样是 14 列', dataLines.length >= 1, dataLines.length + ' 行');
+const dataLines = captured.filter(l => l.startsWith('[StressTest] ') && !l.includes('frame-time sampling') && l.split(',').length === 15);
+check('第 2 行同样是 15 列', dataLines.length >= 1, dataLines.length + ' 行');
 if (dataLines.length) {
     const c = dataLines[0].replace('[StressTest] ', '').split(',');
     check('load_gpu_layers = planes.count(3)', c[8] === '3', 'col=' + c[8]);
@@ -98,13 +98,30 @@ if (dataLines.length) {
     check('fps ≈ 62.5（16ms/帧）', Math.abs(parseFloat(c[2]) - 62.5) < 0.2, 'fps=' + c[2]);
 }
 
-// --- 7) 关温控降帧后，drop_rate/jank 仍用采样基准预算（60fps=16.667ms）---
+// --- 7b) T04：稳定 33.3ms/帧 + 目标 30fps 时，drop_rate(旧口径)=100 而 drop_rate_cur(新口径)≈0 ---
+{
+    const rec30 = new CsvRecorder({ writeCsv: false, planes: { count: 1 }, cubes: { count: 0 }, _log: () => { } });
+    ccStub.game.frameRate = 60;        // 采样起点目标 60fps → 旧口径预算冻结在 16.67ms
+    rec30.start();
+    ccStub.game.frameRate = 30;        // 温控把目标降到 30fps
+    captured = [];
+    console.log = (...a) => { captured.push(a.join(' ')); };
+    for (let t = 0; t < 5200; t += 33.3) { fakeNow += 33.3; rec30.tick(); }   // 稳定 33.3ms/帧
+    console.log = origLog;
+    const l30 = captured.find(l => l.startsWith('[StressTest] ') && l.split(',').length === 15);
+    const p = l30 ? l30.replace('[StressTest] ', '').split(',') : null;
+    check('T04: 目标降到 30 后旧口径 drop_rate 仍报 100', p && parseFloat(p[13]) > 95, p ? p[13] : 'none');
+    check('T04: 同一行新口径 drop_rate_cur ≈ 0（当前档位是稳的）', p && parseFloat(p[14]) < 5, p ? p[14] : 'none');
+    rec30.stop();
+}
+ccStub.game.frameRate = 30;          // 恢复给下一段用
+
 ccStub.game.frameRate = 30;          // 模拟温控把帧率降到 30
 captured = [];
 console.log = (...a) => { captured.push(a.join(' ')); };
 for (let t = 0; t < 5200; t += 16) { fakeNow += 16; rec.tick(); }
 console.log = origLog;
-const line30 = captured.find(l => l.startsWith('[StressTest] ') && l.split(',').length === 14);
+const line30 = captured.find(l => l.startsWith('[StressTest] ') && l.split(',').length === 15);
 check('降帧后 frame_rate 列变成 30', line30 && line30.split(',')[11] === '30', line30 ? line30.split(',')[11] : 'none');
 check('降帧后 fps_std 仍是有效数值', line30 && !Number.isNaN(parseFloat(line30.split(',')[12])), line30 ? line30.split(',')[12] : 'none');
 
