@@ -89,7 +89,7 @@ check('cfg.warmupSeconds 透传', cfg.warmupSeconds === 20);
 check('cfg.enableAutoUpgrade 透传', cfg.enableAutoUpgrade === true);
 check('cfg.probeIntervalSeconds 透传', cfg.probeIntervalSeconds === 45);
 check('cfg.recoveryProbeSeconds 透传', cfg.recoveryProbeSeconds === 12);
-check('cfg.enableFsr 一期为 false', cfg.enableFsr === false);
+check('cfg.enableFsr = true（31eb2d2 起项目启用 FSR，依赖 custom-pipeline-builtin-scripts）', cfg.enableFsr === true);
 check('挂了 levelChange + action 回调', calls.levelChange === 1 && calls.action === 1);
 
 bridge.off();

@@ -84,8 +84,8 @@ export class StressTestController extends Component {
 
     // ==================== DRS 自动切换（验证"降分辨率到底回不回帧"） ====================
 
-    @property({ tooltip: '每 N 秒自动切一次"降分辨率(+FSR)"，用来看帧率是否真的回升。验收跑长测时记得关掉' })
-    public autoToggleDrs: boolean = true;
+    @property({ tooltip: '每 N 秒自动切一次"降分辨率(+FSR)"，用来看帧率是否真的回升。默认关：它会和温控抢 shadingScale，开温控时必须保持关' })
+    public autoToggleDrs: boolean = false;
 
     @property({ tooltip: '切换间隔（秒）。DRS 开 10s → 关 10s → 循环' })
     public drsToggleInterval: number = 10;
@@ -183,6 +183,9 @@ export class StressTestController extends Component {
     /** 帧时间采样 + CSV 记录（实现见 csv-recorder.ts） */
     private csv!: CsvRecorder;
 
+    /** 启动时是否因"温控 + DRS 同时开"而强制关掉了 DRS（getStatus 会暴露它，用来判断数据是否干净） */
+    private _drsConflictResolved = false;
+
 
 
     // ==================== 生命周期 ====================
@@ -211,6 +214,27 @@ export class StressTestController extends Component {
                 + '，平面未铺满全屏；要满屏就把 planeCoverage 设成 1');
         }
         this._resolveRefs();
+        this._resolveDrsConflict();
+    }
+
+    /**
+     * 互斥校验：温控和 DRS A/B 循环都会写 pipeline.shadingScale，同时开 = 互相覆盖。
+     *
+     * 为什么必须互斥：温控的 ScaleAction 自己记账（_currentScale 只在构造时读一次 pipeline），
+     * 外部把 0.30 改成别的值它毫不知情；于是它下一次"降档"可能把 0.30 写成 0.85 —— 反而升了分辨率，
+     * 同时 CSV 的 shading_scale 列变成两路混合的方波，这组数据不能用来论证温控效果。
+     *
+     * 处置：以温控为准，关掉 DRS，并且**大声报错**（不静默改配置，否则用户以为 DRS 还在工作）。
+     * @returns 是否发生了冲突并已处置
+     */
+    private _resolveDrsConflict(): boolean {
+        if (!this.enableThermalControl || !this.autoToggleDrs) return false;
+        this.autoToggleDrs = false;
+        this._drsConflictResolved = true;
+        console.error('[StressTest] 配置冲突：enableThermalControl 与 autoToggleDrs 同时为 true，'
+            + '两者都会写 pipeline.shadingScale（温控自己记账，不知道外部改过它）。'
+            + '已按「温控优先」自动关闭 DRS；要做 DRS 的 A/B 对比，请把 enableThermalControl 关掉后重启。');
+        return true;
     }
 
     /**
@@ -347,7 +371,7 @@ export class StressTestController extends Component {
     /** 平面自检：在不在视野、有没有网格、材质对不对 */
     public diagPlane(): boolean { return this.planes.diag(); }
 
-    /** 诊断 FSR 链路（custom pipeline 探针） */
+    /** 诊断 FSR 链路 */
     public diagFsr() { return this.thermalBridge.diagFsr(); }
 
     /** GPU 负载滑块：叠加层数 0~8（不改平面大小） */
@@ -397,6 +421,12 @@ export class StressTestController extends Component {
      * 否则会出现"值变了但 RT 尺寸没变"。
      */
     public setScale(scale: number) {
+        // 温控开着时手动改 scale：温控的 ScaleAction 自己记账（_currentScale），感知不到这次改动，
+        // 它下一次升降档会基于旧值算档位，可能把 0.30 写回 0.85（反而升了分辨率）。所以明确告警。
+        if (this.enableThermalControl) {
+            console.warn('[StressTest] 注意：温控正在接管 shadingScale，这次手动 setScale 会被它下一次升降档覆盖'
+                + '（ScaleAction 不知道外部改过）。要做干净的手动测试请先 thermalOff()。');
+        }
         const root: any = (director as any).root;
         const pipeline = root?.pipeline;
         if (pipeline) {
@@ -419,7 +449,15 @@ export class StressTestController extends Component {
     // ==================== DRS 自动切换 —— 实现见 drs-probe.ts ====================
 
     /** 启动"每 N 秒切一次 DRS"的 A/B 循环 */
-    public startDrsToggle(): void { this.drs.start(); }
+    /** 启动"每 N 秒切一次 DRS"的 A/B 循环。温控开启时拒绝执行（两者会互相覆盖 shadingScale） */
+    public startDrsToggle(): void {
+        if (this.enableThermalControl) {
+            console.error('[StressTest] 拒绝启动 DRS：温控正在接管 shadingScale，两者会互相覆盖（温控不知道外部改过它）。'
+                + '先关掉 enableThermalControl 或调用 thermalOff() 再启动。');
+            return;
+        }
+        this.drs.start();
+    }
 
     /** 停止 DRS 循环，并把分辨率还原到 1.0 */
     public stopDrsToggle(): void { this.drs.stop(); }
@@ -492,6 +530,10 @@ export class StressTestController extends Component {
             thermalScale: Number(state.shadingScale),
             sampling: this.csv.sampling,
             csvRows: this.csv.rowCount,
+            thermalOn: this.enableThermalControl,
+            drsAutoToggle: this.autoToggleDrs,
+            /** 启动时是否因"温控 + DRS 同时开"而强制关掉了 DRS：为 true 说明这组数据里没有 DRS 行为 */
+            drsConflict: this._drsConflictResolved,
         };
     }
 
