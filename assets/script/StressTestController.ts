@@ -8,6 +8,7 @@ import { CsvRecorder } from './csv-recorder';
 import { HeatPlaneRig } from './heat-plane';
 import { ThermalBridge } from './thermal-bridge';
 import { DrsProbe } from './drs-probe';
+import { CpuCubes } from './cpu-cubes';
 const { ccclass, property } = _decorator;
 
 /** HeatPlane 的着色依据 */
@@ -26,7 +27,7 @@ enum TintMode {
  * ── 场景 A（spawnCount = 0）—— 纯 GPU，验证"降分辨率(DRS)"的收益 ──────────────
  *   负载全部来自 3D 相机渲染目标上的一块（或多块叠加的）满屏平面，
  *   片元着色器是 64 次迭代的纯乘加依赖链，所以成本 ≈ 层数 × 像素量。
- *   update() 里只有帧时间采样，currentObjects 为空 → 立方体动画一次都不进。
+ *   update() 里只有帧时间采样，立方体为空 → 动画一次都不进（见 cpu-cubes.ts 的 early return）。
  *   GPU 负载滑块 = 叠加层数（0 = 关闭，1~8 = 几层全屏），颜色随层数蓝→红。
  *
  * ── 场景 B（spawnCount > 0）—— CPU 负载 ────────────────────────────────────
@@ -182,12 +183,8 @@ export class StressTestController extends Component {
 
     /** 引擎 thermal 的接线层（实现见 thermal-bridge.ts） */
     private thermalBridge!: ThermalBridge;
-    /** 场景 B 的立方体节点 */
-    private currentObjects: Node[] = [];
-    /** 颜色切换节流计数（帧） */
-    private _frameCounter: number = 0;
-    /** 吸收 cpuWorkPerCube 的计算结果，防止 JIT 把循环优化掉 */
-    private _cpuSink: number = 0;
+    /** 场景 B 的立方体（实现见 cpu-cubes.ts） */
+    private cubes!: CpuCubes;
 
     // ---- 压力着色（Pressure 模式）与层数着色（Load 模式）共用 ----
     /** 帧时间指数滑动平均（ms），只有 Pressure 模式会更新 */
@@ -220,6 +217,7 @@ export class StressTestController extends Component {
         this.planes = new HeatPlaneRig(this);
         this.thermalBridge = new ThermalBridge(this);
         this.drs = new DrsProbe(this);
+        this.cubes = new CpuCubes(this);
         this.csv.onRow = () => this._updateDrsLabel();
         if (this.countSlider) {
             this.countSlider.setValue(this.spawnCount, true);
@@ -248,7 +246,7 @@ export class StressTestController extends Component {
     start() {
         if (this.showProfiler) profiler.showStats();
 
-        this.generateObjects(this.spawnCount);
+        this.cubes.generate(this.spawnCount);
         this.refreshUI();
         this.applyLoad();
         if (this.planes.count > 0) this.diagPlane();   // 只在启动时打一次，拖滑块不会刷屏
@@ -293,15 +291,12 @@ export class StressTestController extends Component {
 
     /**
      * 两套场景共用这一个 update()，靠 spawnCount 切换：
-     * - spawnCount = 0 → 场景 A（纯 GPU）：currentObjects 为空，下面的循环一次都不进，每帧只剩 3 行采样。
+     * - spawnCount = 0 → 场景 A（纯 GPU）：立方体为空，下面这行调用立即返回，每帧只剩采样。
      * - spawnCount > 0 → 场景 B（CPU 负载）：逐立方体自转/浮动/公转/实例色，O(N)，CPU 抢走瓶颈。
      * 这是红线 2 的边界：A 的数据必须来自"没有这个循环"的那次运行，所以别在 A 的测试里开立方体。
      */
     update(dt: number) {
-        const objects = this.currentObjects;
-        if (objects.length > 0) {
-            this._animateCubes(objects, dt);
-        }
+        this.cubes.animate(dt);
 
         // Pressure 模式才需要逐帧采样；Load 模式（默认）颜色只跟层数走，这里零开销
         if (this.tintMode === TintMode.Pressure) {
@@ -309,64 +304,6 @@ export class StressTestController extends Component {
         }
 
         this.csv.tick();
-    }
-
-    /**
-     * 场景 B 的 CPU 负载主体：每帧遍历所有立方体，改 transform（+可选改实例颜色）。
-     * 这就是"CPU 瓶颈"的来源：N 个立方体 = N 次 euler/position 写入 + N 次引擎侧世界矩阵更新。
-     */
-    private _animateCubes(objects: Node[], dt: number): void {
-        const len = objects.length;
-        const rotSpeed = this.rotationSpeed * dt;
-        const orbitRad = this.orbitSpeed * Math.PI / 180 * dt;
-        const rotSpeedY = rotSpeed * 0.7;
-        const rotSpeedZ = rotSpeed * 0.3;
-        const work = Math.max(0, Math.floor(this.cpuWorkPerCube));
-
-        this._frameCounter++;
-        const doColorSwitch = this.enableDynamicColor
-            && (this.colorSwitchInterval <= 0 || this._frameCounter % this.colorSwitchInterval === 0);
-
-        for (let i = 0; i < len; i++) {
-            const obj = objects[i];
-            if (!obj || !obj.isValid) continue;
-
-            // 自转
-            const euler = obj.eulerAngles;
-            obj.eulerAngles = new Vec3(
-                euler.x + rotSpeed,
-                euler.y + rotSpeedY,
-                euler.z + rotSpeedZ
-            );
-
-            // 公转（已去掉上下浮动：抖动刺眼，floatAmplitude/floatFrequency 两个属性已删除，Y 保持不变）
-            const pos = obj.position;
-            const radius = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
-            const angle = Math.atan2(pos.z, pos.x) + orbitRad;
-            obj.setPosition(Math.cos(angle) * radius, pos.y, Math.sin(angle) * radius);
-
-            // 实例化颜色变换（写 GPU 实例 buffer，CPU 侧同样随数量线性）
-            if (doColorSwitch) {
-                const model = obj.getComponent(MeshRenderer);
-                if (model) {
-                    model.setInstancedAttribute('a_instanced_color', [
-                        Math.floor(Math.random() * 256),
-                        Math.floor(Math.random() * 256),
-                        Math.floor(Math.random() * 256),
-                        255
-                    ]);
-                }
-            }
-
-            // 可选：纯浮点负载，用来在立方体数量不变时继续加压（结果写进字段，防止被优化掉）
-            if (work > 0) {
-                let acc = this._cpuSink + i;
-                for (let k = 0; k < work; k++) {
-                    acc = acc * 1.0000001 + 0.5;
-                }
-                this._cpuSink = acc % 1000;
-            }
-        }
     }
 
     /**
@@ -551,7 +488,7 @@ export class StressTestController extends Component {
     /** 场景 B：立方体数量。0 = 回到场景 A（纯 GPU）。滑块和它双向同步 */
     public setSpawnCount(count: number, fromSlider: boolean = false) {
         this.spawnCount = Math.max(0, Math.floor(count));
-        this.generateObjects(this.spawnCount);
+        this.cubes.generate(this.spawnCount);
         if (!fromSlider && this.countSlider) {
             this.countSlider.setValue(this.spawnCount, true);
         }
@@ -561,7 +498,7 @@ export class StressTestController extends Component {
     public setCpuWork(n: number) {
         this.cpuWorkPerCube = Math.max(0, Math.floor(n));
         console.log('[StressTest] cpuWorkPerCube = ' + this.cpuWorkPerCube
-            + '（约 ' + (this.currentObjects.length * this.cpuWorkPerCube) + ' 次浮点运算/帧）');
+            + '（约 ' + (this.cubes.count * this.cpuWorkPerCube) + ' 次浮点运算/帧）');
     }
 
     /** 直接改帧率档（game.frameRate），用来对比 60/30 档的收益 */
@@ -638,7 +575,7 @@ export class StressTestController extends Component {
         if (!toggle) return;
         this.enableDynamicColor = toggle.isChecked;
         console.log('[StressTest] dynamic color = ' + this.enableDynamicColor
-            + (this.currentObjects.length === 0 ? '（当前没有立方体，无实际开销）' : '（' + this.currentObjects.length + ' 个立方体，开启后每帧线性增加 CPU）'));
+            + (this.cubes.count === 0 ? '（当前没有立方体，无实际开销）' : '（' + this.cubes.count + ' 个立方体，开启后每帧线性增加 CPU）'));
     }
 
     /** 开关颜色变换（供控制台调用） */
@@ -662,11 +599,11 @@ export class StressTestController extends Component {
         const pipeline = (director as any).root?.pipeline;
         const state = thermal.getState();
         return {
-            mode: this.currentObjects.length > 0 ? 'B/CPU' : 'A/GPU',
+            mode: this.cubes.count > 0 ? 'B/CPU' : 'A/GPU',
             heatPlanes: this.planes.count,
             planeCoverage: Number(this.planeCoverage.toFixed(2)),
             gpuLayers: this.planes.count,
-            cubes: this.currentObjects.length,
+            cubes: this.cubes.count,
             cpuWorkPerCube: this.cpuWorkPerCube,
             particleRate: this.particleRate,
             fps: Number(this.csv.lastFps.toFixed(1)),
@@ -704,55 +641,5 @@ export class StressTestController extends Component {
         if (wx && typeof wx.getRealtimeLogManager === 'function') {
             try { wx.getRealtimeLogManager().info(msg); } catch (e) { /* ignore */ }
         }
-    }
-
-    // ==================== 场景 B：立方体（CPU 负载） ====================
-
-    /**
-     * 生成 N 个立方体。只在滑块变化/启动时调用，不在 update() 里。
-     * 每个立方体在生成时写一次实例颜色（a_instanced_color），之后由 _animateCubes 决定是否继续改。
-     */
-    private generateObjects(count: number) {
-        this.clearObjects();
-        const prefab = this.testObjectPrefab;
-        if (!prefab) {
-            if (count > 0) console.warn('[StressTest] testObjectPrefab is missing; skip object generation');
-            return;
-        }
-        for (let i = 0; i < count; i++) {
-            const obj = instantiate(prefab);
-            const angle = Math.random() * Math.PI * 2;
-            const radius = Math.random() * this.spawnRadius;
-            obj.setPosition(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-
-            // 必须先加入场景，实例化属性才生效
-            this.node.addChild(obj);
-
-            const model = obj.getComponent(MeshRenderer);
-            if (model) {
-                model.setInstancedAttribute('a_instanced_color', [
-                    Math.floor(Math.random() * 256),
-                    Math.floor(Math.random() * 256),
-                    Math.floor(Math.random() * 256),
-                    255
-                ]);
-            }
-
-            this.currentObjects.push(obj);
-        }
-        if (count > 0) {
-            console.log('[StressTest] object count = ' + count);
-            console.warn('[StressTest] 已启用 CPU 负载（' + count + ' 个立方体，每帧 O(N) 遍历'
-                + (this.cpuWorkPerCube > 0 ? ' + ' + (count * this.cpuWorkPerCube) + ' 次浮点运算' : '')
-                + '）。这组数据反映 CPU 瓶颈，不要用来评估 GPU / 降分辨率收益。');
-        }
-    }
-
-    /** 销毁所有立方体（下一次 generateObjects 会重建） */
-    private clearObjects() {
-        this.currentObjects.forEach(obj => {
-            if (obj && obj.isValid) obj.destroy();
-        });
-        this.currentObjects = [];
     }
 }

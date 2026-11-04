@@ -359,7 +359,7 @@ export class HeatPlaneRig {
         const px = Math.round(this._ctrl.planeCoverage * this._ctrl.planeCoverage * 100);
         console.log('[StressTest] load: planes=' + this._count
             + ' coverage=' + this._ctrl.planeCoverage.toFixed(2) + '(' + px + '% 像素/层)'
-            + ' cubes=' + this._ctrl.currentObjects.length
+            + ' cubes=' + this._ctrl.cubes.count
             + ' | scale=' + scale
             + ' fpsTarget=' + game.frameRate
             + ' | thermal=' + (this._ctrl.enableThermalControl ? 'ON' : 'OFF'));
