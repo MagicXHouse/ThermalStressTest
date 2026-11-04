@@ -7,6 +7,7 @@ import { SliderBinder } from './SliderBinder';
 import { CsvRecorder } from './csv-recorder';
 import { HeatPlaneRig } from './heat-plane';
 import { ThermalBridge } from './thermal-bridge';
+import { DrsProbe } from './drs-probe';
 const { ccclass, property } = _decorator;
 
 /** HeatPlane 的着色依据 */
@@ -203,13 +204,8 @@ export class StressTestController extends Component {
     /** Pressure 模式算出的压力值 0~1 */
     private _pressureP: number = 0;
 
-    // ---- DRS 自动切换 ----
-    /** 当前是否处于"降分辨率"状态 */
-    private _drsOn: boolean = false;
-    /** 当前实际写进 pipeline 的 shadingScale（用来打 1.00 → 0.30 这种切换日志） */
-    private _drsScale: number = 1.0;
-    /** 循环回调的稳定引用（unschedule 必须用同一个函数） */
-    private _drsTick: (() => void) | null = null;
+    /** DRS A/B 循环（实现见 drs-probe.ts） */
+    private drs!: DrsProbe;
 
     /** 帧时间采样 + CSV 记录（实现见 csv-recorder.ts） */
     private csv!: CsvRecorder;
@@ -223,6 +219,7 @@ export class StressTestController extends Component {
         this.csv = new CsvRecorder(this);
         this.planes = new HeatPlaneRig(this);
         this.thermalBridge = new ThermalBridge(this);
+        this.drs = new DrsProbe(this);
         this.csv.onRow = () => this._updateDrsLabel();
         if (this.countSlider) {
             this.countSlider.setValue(this.spawnCount, true);
@@ -603,81 +600,16 @@ export class StressTestController extends Component {
         return s;
     }
 
-    // ==================== DRS 自动切换（A/B 验证用） ====================
+    // ==================== DRS 自动切换 —— 实现见 drs-probe.ts ====================
 
-    /**
-     * 启动"每 N 秒切一次 DRS"的循环：先跑 10 秒满分辨率做基线，再切到低分辨率 10 秒，如此循环。
-     * 每次切换都会打印**上一窗口**的实测 fps，所以控制台里能直接读出两档的差值；
-     * CSV 的 shading_scale 列也会变成 1.00 / 0.30 的方波，事后画图就能对齐。
-     *
-     * 关于 FSR：4.0 里 FSR 是 post-process（PostProcess/FSR），而 thermal 的 FSR 钩子写的是
-     * camera.pipelineSettings.fsr —— 这个字段在当前引擎里没有读取方，调 setFsrEnabled 只会每 10 秒
-     * 刷一条 "BuiltinPipelineSettings is unavailable" 警告。所以这里只切 shadingScale，
-     * 测出来的是**纯降分辨率**的收益（这也是影响帧率的主体）。
-     */
-    public startDrsToggle(): void {
-        this.stopDrsToggle();
-        this._drsOn = false;
-        this._drsScale = 1.0;
-        this._applyDrs(false);                       // 从"不降"开始，先拿基线
-        this._drsTick = () => this._applyDrs(!this._drsOn);
-        this.schedule(this._drsTick, Math.max(1, this.drsToggleInterval));
-        console.log('[StressTest] DRS 循环启动：shadingScale 在 1.00 和 ' + this.drsLowScale.toFixed(2)
-            + ' 之间切换，每 ' + this.drsToggleInterval + 's 一次（stopDrsToggle() 停止）');
-        if (!this.drsLabel) {
-            console.log('[StressTest] 想看屏幕上的档位数字就把一个 Label 拖到 Drs Label 槽');
-        }
-        console.log('[StressTest] 注：FSR 不参与切换（4.0 的 FSR 是 post-process，thermal 的钩子在当前引擎是空转），'
-            + '所以这是纯 shadingScale 的 A/B');
-        if (this.enableThermalControl) {
-            console.warn('[StressTest] 温控也会写 shadingScale，会和这个循环抢；做 A/B 时请把 enableThermalControl 关掉');
-        }
-    }
+    /** 启动"每 N 秒切一次 DRS"的 A/B 循环 */
+    public startDrsToggle(): void { this.drs.start(); }
 
     /** 停止 DRS 循环，并把分辨率还原到 1.0 */
-    public stopDrsToggle(): void {
-        if (!this._drsTick) return;
-        this.unschedule(this._drsTick);
-        this._drsTick = null;
-        if (this._drsScale < 1) {
-            this.setScale(1.0);
-            this._drsScale = 1.0;
-            this._updateDrsLabel();
-        }
-        console.log('[StressTest] DRS 循环已停止，shadingScale 还原 1.00');
-    }
+    public stopDrsToggle(): void { this.drs.stop(); }
 
-    /**
-     * 切一次 DRS：on → drsLowScale（默认 0.30），off → 1.00。
-     * 日志直接写成 "1.00 → 0.30" 的形式，并带上**上一档**的实测 fps，
-     * 所以只要看下面两行交替出现，就说明切换生效了：
-     *   DRS 1.00 → 0.30 | 上一档实测 38.5fps (ft=25.97ms)
-     *   DRS 0.30 → 1.00 | 上一档实测 58.4fps (ft=17.12ms)
-     */
-    private _applyDrs(on: boolean): void {
-        this._drsOn = on;
-        const from = this._drsScale;
-        const to = on ? this.drsLowScale : 1.0;
-        this._drsScale = to;
-
-        this.setScale(to);
-
-        const fps = this.csv.lastFps;
-        const ft = fps > 0 ? (1000 / fps) : 0;
-        console.log('[StressTest] DRS ' + from.toFixed(2) + ' → ' + to.toFixed(2)
-            + (fps > 0 ? ' | 上一档实测 ' + fps.toFixed(1) + 'fps (ft=' + ft.toFixed(2) + 'ms)' : ' | 测基线中…'));
-        this._updateDrsLabel();
-    }
-
-    /** 屏幕上的档位显示：直接读 pipeline 的实际 shadingScale + 最近窗口 fps，所以温控改档时也是真的 */
-    private _updateDrsLabel(): void {
-        if (!this.drsLabel) return;
-        const pipeline = (director as any).root?.pipeline;
-        const scale = pipeline ? Number(pipeline.shadingScale) : this._drsScale;
-        const fps = this.csv.lastFps;
-        this.drsLabel.string = 'shadingScale ' + scale.toFixed(2)
-            + (fps > 0 ? '   ' + fps.toFixed(1) + ' fps' : '');
-    }
+    /** 屏幕上的档位显示（CSV 每出一行 / setScale 后刷新） */
+    private _updateDrsLabel(): void { this.drs.updateLabel(); }
 
     // ==================== 温控 / FSR —— 实现见 thermal-bridge.ts ====================
 
