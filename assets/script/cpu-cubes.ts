@@ -1,4 +1,4 @@
-import { Node, Vec3, MeshRenderer, Prefab, instantiate } from 'cc';
+import { Node, MeshRenderer, Prefab, instantiate } from 'cc';
 
 /**
  * 场景 B 的 CPU 负载：立方体的生成 / 销毁 / 逐帧动画。
@@ -11,13 +11,37 @@ export class CpuCubes {
     private _ctrl: any;
     /** 场景 B 的立方体节点 */
     private _nodes: Node[] = [];
+    /**
+     * 与 _nodes 一一对应的 MeshRenderer 缓存。
+     * 原来在 animate() 里每帧每个立方体都 getComponent(MeshRenderer)，O(N) 组件查找非常贵，
+     * 而且会让"CPU 负载"里混入查找开销 —— 生成时缓存一次即可。
+     */
+    private _models: (MeshRenderer | null)[] = [];
+    /** 实例颜色复用缓冲（setInstancedAttribute 内部会拷进实例 buffer，可以安全复用） */
+    private readonly _colorScratch = new Float32Array(4);
     /** 颜色切换节流计数（帧） */
     private _frameCounter = 0;
     /** 吸收 cpuWorkPerCube 的计算结果，防止 JIT 把循环优化掉 */
     private _cpuSink = 0;
+    /** 上一帧 animate() 的 CPU 耗时（毫秒）——用来回答"这到底是不是在压 CPU" */
+    private _msLast = 0;
+    /** CPU 耗时的指数滑动平均（alpha=0.1） */
+    private _msAvg = 0;
 
     constructor (ctrl: any) {
         this._ctrl = ctrl;
+    }
+
+    /** 上一帧 animate() 的 CPU 耗时（毫秒） */
+    public get lastMs (): number { return this._msLast; }
+
+    /** animate() CPU 耗时的滑动平均（毫秒） */
+    public get avgMs (): number { return this._msAvg; }
+
+    /** 单立方体平均耗时（微秒），用来判断成本是否随 N 线性 */
+    public get perCubeUs (): number {
+        const n = this._nodes.length;
+        return n > 0 ? (this._msAvg * 1000) / n : 0;
     }
 
     /** 当前立方体数量（getStatus / 日志 / CSV 的 spawn_count 读它） */
@@ -45,21 +69,23 @@ export class CpuCubes {
 
             const model = obj.getComponent(MeshRenderer);
             if (model) {
-                model.setInstancedAttribute('a_instanced_color', [
-                    Math.floor(Math.random() * 256),
-                    Math.floor(Math.random() * 256),
-                    Math.floor(Math.random() * 256),
-                    255
-                ]);
+                const c = this._colorScratch;
+                c[0] = Math.floor(Math.random() * 256);
+                c[1] = Math.floor(Math.random() * 256);
+                c[2] = Math.floor(Math.random() * 256);
+                c[3] = 255;
+                model.setInstancedAttribute('a_instanced_color', c);
             }
 
             this._nodes.push(obj);
+            this._models.push(model || null);
         }
         if (count > 0) {
+            const perCube = Math.floor(this._ctrl.perCubeBaseOps + this._ctrl.cpuWorkPerCube);
             console.log('[StressTest] object count = ' + count);
-            console.warn('[StressTest] 已启用 CPU 负载（' + count + ' 个立方体，每帧 O(N) 遍历'
-                + (this._ctrl.cpuWorkPerCube > 0 ? ' + ' + (count * this._ctrl.cpuWorkPerCube) + ' 次浮点运算' : '')
-                + '）。这组数据反映 CPU 瓶颈，不要用来评估 GPU / 降分辨率收益。');
+            console.warn('[StressTest] 已启用 CPU 负载（' + count + ' 个立方体 × 每帧 ' + perCube
+                + ' 次浮点运算 ≈ ' + (count * perCube) + ' 次/帧）。'
+                + '这组数据反映 CPU 瓶颈，不要用来评估 GPU / 降分辨率收益。');
         }
     }
 
@@ -69,22 +95,35 @@ export class CpuCubes {
             if (obj && obj.isValid) obj.destroy();
         });
         this._nodes = [];
+        this._models = [];
     }
 
     /**
-     * 场景 B 的 CPU 负载主体：每帧遍历所有立方体，改 transform（+可选改实例颜色）。
-     * 这就是"CPU 瓶颈"的来源：N 个立方体 = N 次 euler/position 写入 + N 次引擎侧世界矩阵更新。
+     * 场景 B 的 CPU 负载主体：每帧遍历所有立方体，改 transform + 每个立方体做固定量的浮点运算。
+     *
+     * 为什么要有"每立方体基础运算"：只写 transform 的话，2000 个立方体也才 ~1ms，
+     * 根本压不过 16.67ms 的帧预算（实测 ft_avg 反而更低）。所以每个立方体再加
+     * `perCubeBaseOps` 次浮点运算，让**数量本身**就是负载旋钮：
+     *     每帧运算量 ≈ count × (perCubeBaseOps + cpuWorkPerCube)
+     * 关系是严格线性的，可以用 getStatus().cubeCpuMs 校准。
      */
     public animate (dt: number): void {
         const objects = this._nodes;
         const len = objects.length;
-        if (len === 0) return;     // 场景 A：一行循环都不进（红线 2）
+        if (len === 0) {
+            // 场景 A：一行循环都不进（红线 2），顺便把计时归零
+            this._msLast = 0;
+            this._msAvg = 0;
+            return;
+        }
+
+        const t0 = performance.now();
 
         const rotSpeed = this._ctrl.rotationSpeed * dt;
         const orbitRad = this._ctrl.orbitSpeed * Math.PI / 180 * dt;
         const rotSpeedY = rotSpeed * 0.7;
         const rotSpeedZ = rotSpeed * 0.3;
-        const work = Math.max(0, Math.floor(this._ctrl.cpuWorkPerCube));
+        const work = Math.max(0, Math.floor(this._ctrl.perCubeBaseOps + this._ctrl.cpuWorkPerCube));
 
         this._frameCounter++;
         const doColorSwitch = this._ctrl.enableDynamicColor
@@ -94,13 +133,9 @@ export class CpuCubes {
             const obj = objects[i];
             if (!obj || !obj.isValid) continue;
 
-            // 自转
+            // 自转：直接 setRotationFromEuler(x, y, z)，不再每帧 new Vec3（否则每秒几十万次分配，GC 抖动）
             const euler = obj.eulerAngles;
-            obj.eulerAngles = new Vec3(
-                euler.x + rotSpeed,
-                euler.y + rotSpeedY,
-                euler.z + rotSpeedZ
-            );
+            obj.setRotationFromEuler(euler.x + rotSpeed, euler.y + rotSpeedY, euler.z + rotSpeedZ);
 
             // 公转（已去掉上下浮动：抖动刺眼，floatAmplitude/floatFrequency 两个属性已删除，Y 保持不变）
             const pos = obj.position;
@@ -109,15 +144,16 @@ export class CpuCubes {
             obj.setPosition(Math.cos(angle) * radius, pos.y, Math.sin(angle) * radius);
 
             // 实例化颜色变换（写 GPU 实例 buffer，CPU 侧同样随数量线性）
+            // model 用生成时缓存的那份，且颜色缓冲复用 —— 这个分支也做到零分配
             if (doColorSwitch) {
-                const model = obj.getComponent(MeshRenderer);
-                if (model) {
-                    model.setInstancedAttribute('a_instanced_color', [
-                        Math.floor(Math.random() * 256),
-                        Math.floor(Math.random() * 256),
-                        Math.floor(Math.random() * 256),
-                        255
-                    ]);
+                const model = this._models[i];
+                if (model && model.isValid) {
+                    const c = this._colorScratch;
+                    c[0] = Math.floor(Math.random() * 256);
+                    c[1] = Math.floor(Math.random() * 256);
+                    c[2] = Math.floor(Math.random() * 256);
+                    c[3] = 255;
+                    model.setInstancedAttribute('a_instanced_color', c);
                 }
             }
 
@@ -130,5 +166,10 @@ export class CpuCubes {
                 this._cpuSink = acc % 1000;
             }
         }
+
+        // 计时只包住这个循环：得到的是"立方体脚本自己"的 CPU 成本，不含渲染/引擎其他部分。
+        // 拿去和 16.67ms 的帧预算比，就知道它到底有没有在压 CPU。
+        this._msLast = performance.now() - t0;
+        this._msAvg = this._msAvg * 0.9 + this._msLast * 0.1;
     }
 }

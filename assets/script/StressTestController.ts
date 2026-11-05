@@ -161,6 +161,9 @@ export class StressTestController extends Component {
     @property({ range: [0, 2000, 50], slide: true, tooltip: '每个立方体每帧额外做的浮点运算次数（0=关）。立方体数量不变时用它加大 CPU 负载' })
     public cpuWorkPerCube: number = 0;
 
+    @property({ range: [0, 10000, 100], slide: true, tooltip: '每个立方体每帧的**基础**浮点运算次数。这是"数量越多 CPU 越重"的来源：每帧运算量 ≈ 数量 × (本值 + cpuWorkPerCube)。默认 4000，按 getStatus().cubeCpuMs 校准' })
+    public perCubeBaseOps: number = 4000;
+
     // ==================== UI 引用 ====================
 
     @property(SliderBinder)
@@ -403,11 +406,23 @@ export class StressTestController extends Component {
         }
     }
 
-    /** 场景 B 的加压旋钮：每个立方体每帧额外做多少次浮点运算（0 = 关） */
+    /** 场景 B 的额外加压旋钮：每个立方体每帧**再**多做多少次浮点运算（0 = 只跑基础负载） */
     public setCpuWork(n: number) {
         this.cpuWorkPerCube = Math.max(0, Math.floor(n));
+        const perCube = Math.floor(this.perCubeBaseOps + this.cpuWorkPerCube);
         console.log('[StressTest] cpuWorkPerCube = ' + this.cpuWorkPerCube
-            + '（约 ' + (this.cubes.count * this.cpuWorkPerCube) + ' 次浮点运算/帧）');
+            + '（基础 ' + Math.floor(this.perCubeBaseOps) + ' + 额外 ' + this.cpuWorkPerCube
+            + ' = ' + perCube + ' 次/立方体/帧；' + this.cubes.count + ' 个 → 约 '
+            + (this.cubes.count * perCube) + ' 次浮点运算/帧）');
+    }
+
+    /** 场景 B 的基础负载：每个立方体每帧做多少次浮点运算（数量 × 本值 = 负载） */
+    public setPerCubeBaseOps(n: number) {
+        this.perCubeBaseOps = Math.max(0, Math.floor(n));
+        const perCube = Math.floor(this.perCubeBaseOps + this.cpuWorkPerCube);
+        console.log('[StressTest] perCubeBaseOps = ' + this.perCubeBaseOps
+            + '（每立方体每帧 ' + perCube + ' 次；' + this.cubes.count + ' 个 → 约 '
+            + (this.cubes.count * perCube) + ' 次/帧）');
     }
 
     /** 直接改帧率档（game.frameRate），用来对比 60/30 档的收益 */
@@ -548,6 +563,14 @@ export class StressTestController extends Component {
             planeCoverage: Number(this.planeCoverage.toFixed(2)),
             gpuLayers: this.planes.count,
             cubes: this.cubes.count,
+            /** 每帧浮点运算量 ≈ 数量 × (perCubeBaseOps + cpuWorkPerCube)，与 CPU 耗时应呈线性 */
+            cubeOpsPerFrame: this.cubes.count * Math.floor(this.perCubeBaseOps + this.cpuWorkPerCube),
+            /** 立方体脚本每帧的 CPU 耗时（毫秒）：判断"是不是真在压 CPU"，而不是靠立方体数量猜 */
+            cubeCpuMs: {
+                last: Number(this.cubes.lastMs.toFixed(2)),
+                avg: Number(this.cubes.avgMs.toFixed(2)),
+                perCubeUs: Number(this.cubes.perCubeUs.toFixed(2)),
+            },
             cpuWorkPerCube: this.cpuWorkPerCube,
             particleRate: this.particleRate,
             fps: Number(this.csv.lastFps.toFixed(1)),
