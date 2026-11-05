@@ -94,8 +94,8 @@ stressTest.getStatus().cubeOpsPerFrame  // 每帧浮点运算量
 ### 4.2 控制台入口（运行时挂在 `stressTest` 上）
 
 ```
-负载   : setHeatPlaneCount(0~8) | setPlaneCoverage(0~1) | setParticleRate(n)
-        setSpawnCount(n) | setCpuWork(0~2000) | setPerCubeBaseOps(0~10000) | setColorEnabled(bool)
+负载   : setHeatPlaneCount(0~8) | setPlaneCoverage(0~1)
+        setSpawnCount(n) | setCpuWork(0~2000) | setPerCubeBaseOps(0~10000)
 温控   : thermalOn() | thermalOff() | thermalDown() | thermalUp() | thermalLevel()
         setTriggerPercent(%) | setDowngradeOrder('scale-first'|'frameRate-first')
 FSR    : setFsrEnabled(bool) | setFsrMinScale(0.7) | diagFsr() | getThermal()

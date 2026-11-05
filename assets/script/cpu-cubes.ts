@@ -12,15 +12,11 @@ export class CpuCubes {
     /** 场景 B 的立方体节点 */
     private _nodes: Node[] = [];
     /**
-     * 与 _nodes 一一对应的 MeshRenderer 缓存。
-     * 原来在 animate() 里每帧每个立方体都 getComponent(MeshRenderer)，O(N) 组件查找非常贵，
-     * 而且会让"CPU 负载"里混入查找开销 —— 生成时缓存一次即可。
+     * 生成时写一次实例颜色的复用缓冲。
+     * 注意：**这一步不能删** —— Cube 的材质用 `mainColor * a_instanced_color`，
+     * 不写这个属性立方体会是黑的。每帧换色那套逻辑已经删掉了，这里只做初始化。
      */
-    private _models: (MeshRenderer | null)[] = [];
-    /** 实例颜色复用缓冲（setInstancedAttribute 内部会拷进实例 buffer，可以安全复用） */
     private readonly _colorScratch = new Float32Array(4);
-    /** 颜色切换节流计数（帧） */
-    private _frameCounter = 0;
     /** 吸收 cpuWorkPerCube 的计算结果，防止 JIT 把循环优化掉 */
     private _cpuSink = 0;
     /** 上一帧 animate() 的 CPU 耗时（毫秒）——用来回答"这到底是不是在压 CPU" */
@@ -49,7 +45,7 @@ export class CpuCubes {
 
     /**
      * 生成 N 个立方体。只在滑块变化/启动时调用，不在 update() 里。
-     * 每个立方体在生成时写一次实例颜色（a_instanced_color），之后由 animate() 决定是否继续改。
+     * 每个立方体在生成时写一次实例颜色（a_instanced_color），之后不再改。
      */
     public generate (count: number): void {
         this.clear();
@@ -78,7 +74,6 @@ export class CpuCubes {
             }
 
             this._nodes.push(obj);
-            this._models.push(model || null);
         }
         if (count > 0) {
             const perCube = Math.floor(this._ctrl.perCubeBaseOps + this._ctrl.cpuWorkPerCube);
@@ -98,7 +93,6 @@ export class CpuCubes {
             if (obj && obj.isValid) obj.destroy();
         });
         this._nodes = [];
-        this._models = [];
     }
 
     /**
@@ -128,10 +122,6 @@ export class CpuCubes {
         const rotSpeedZ = rotSpeed * 0.3;
         const work = Math.max(0, Math.floor(this._ctrl.perCubeBaseOps + this._ctrl.cpuWorkPerCube));
 
-        this._frameCounter++;
-        const doColorSwitch = this._ctrl.enableDynamicColor
-            && (this._ctrl.colorSwitchInterval <= 0 || this._frameCounter % this._ctrl.colorSwitchInterval === 0);
-
         for (let i = 0; i < len; i++) {
             const obj = objects[i];
             if (!obj || !obj.isValid) continue;
@@ -145,20 +135,6 @@ export class CpuCubes {
             const radius = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
             const angle = Math.atan2(pos.z, pos.x) + orbitRad;
             obj.setPosition(Math.cos(angle) * radius, pos.y, Math.sin(angle) * radius);
-
-            // 实例化颜色变换（写 GPU 实例 buffer，CPU 侧同样随数量线性）
-            // model 用生成时缓存的那份，且颜色缓冲复用 —— 这个分支也做到零分配
-            if (doColorSwitch) {
-                const model = this._models[i];
-                if (model && model.isValid) {
-                    const c = this._colorScratch;
-                    c[0] = Math.floor(Math.random() * 256);
-                    c[1] = Math.floor(Math.random() * 256);
-                    c[2] = Math.floor(Math.random() * 256);
-                    c[3] = 255;
-                    model.setInstancedAttribute('a_instanced_color', c);
-                }
-            }
 
             // 可选：纯浮点负载，用来在立方体数量不变时继续加压（结果写进字段，防止被优化掉）
             if (work > 0) {

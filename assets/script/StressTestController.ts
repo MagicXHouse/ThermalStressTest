@@ -1,6 +1,6 @@
 import {
     _decorator, Component, Node, Prefab, profiler, Enum,
-    Toggle, Label, Camera,
+    Label, Camera,
     director, game, thermal, cclegacy,
 } from 'cc';
 import { SliderBinder } from './SliderBinder';
@@ -25,7 +25,7 @@ const { ccclass, property } = _decorator;
  *   立方体数量或 cpuWorkPerCube 都能把 CPU 压过 16.7ms 预算。
  *
  * ── 三条红线 ──────────────────────────────────────────────────────────────
- * 1. 场景 A 的 GPU 压测点必须由 3D 相机渲染：MeshRenderer / ParticleSystem，且不在 Canvas 下
+ * 1. 场景 A 的 GPU 压测点必须由 3D 相机渲染：MeshRenderer，且不在 Canvas 下
  *    —— shadingScale 只缩放 3D 相机，Canvas(UI_2D) 走独立通道、按原生分辨率渲染。
  * 2. 场景 A 的 update() 不能有遍历/矩阵运算。这条由 spawnCount=0 保证；一旦开了立方体就是场景 B，
  *    那组数据不能再用来论证 GPU / DRS 收益。
@@ -33,8 +33,8 @@ const { ccclass, property } = _decorator;
  *    否则温控永远不动，等于白测。
  *
  * ── 常用控制台入口（运行时挂在 globalThis.stressTest 上）────────────────────
- *   GPU: setHeatPlaneCount(0~8) / setPlaneCoverage(0.05~1) / setParticleRate(n)
- *   CPU: setSpawnCount(n) / setCpuWork(0~2000) / setColorEnabled(bool)
+ *   GPU: setHeatPlaneCount(0~8) / setPlaneCoverage(0.05~1)
+ *   CPU: setSpawnCount(n) / setCpuWork(0~2000) / setPerCubeBaseOps(n)
  *   DRS: setScale(1|0.85|0.7|0.3) / thermalOn() / thermalOff() / thermalDown() / thermalUp()
  *   数据: exportCsv() / printCsv(n) / getStatus() / logStatus() / tintInfo()
  */
@@ -96,14 +96,6 @@ export class StressTestController extends Component {
     @property({ type: Label, tooltip: '（可选）屏幕上的档位显示：挂一个 Label，会实时显示 shadingScale 和 fps，一眼看出当前哪一档' })
     public drsLabel: Label | null = null;
 
-    // ==================== 次要负载：粒子 ====================
-
-    @property({ type: Node, tooltip: 'Particle 节点，留空按名字自动找' })
-    public particleNode: Node | null = null;
-
-    @property({ tooltip: '粒子发射速率（个/秒）；<0 表示不改动画布上调好的值' })
-    public particleRate: number = -1;
-
     // ==================== 温控参数 ====================
 
     @property({ tooltip: '降档后允许的最低帧率。设成 60 = 钉住帧率（只让温控降分辨率）；45/40 这类非整数因子会被引擎回落到 30' })
@@ -152,12 +144,6 @@ export class StressTestController extends Component {
     @property({ tooltip: '绕中心公转速度（度/秒）' })
     public orbitSpeed: number = 10;
 
-    @property({ tooltip: '是否随机切换实例颜色（每 N 帧一次；会写 GPU 实例 buffer，CPU 成本随数量线性）' })
-    public enableDynamicColor: boolean = false;
-
-    @property({ tooltip: '颜色切换间隔（帧），越大 CPU 越轻松' })
-    public colorSwitchInterval: number = 10;
-
     @property({ range: [0, 2000, 50], slide: true, tooltip: '每个立方体每帧额外做的浮点运算次数（0=关）。立方体数量不变时用它加大 CPU 负载' })
     public cpuWorkPerCube: number = 0;
 
@@ -168,9 +154,6 @@ export class StressTestController extends Component {
 
     @property(SliderBinder)
     public countSlider: SliderBinder | null = null;
-
-    @property(Toggle)
-    public colorToggle: Toggle | null = null;
 
     @property(SliderBinder)
     public gpuSlider: SliderBinder | null = null;
@@ -292,8 +275,8 @@ export class StressTestController extends Component {
 
         (globalThis as any).stressTest = this;
         console.log('[StressTest] attached to globalThis.stressTest');
-        console.log('  A/GPU: setHeatPlaneCount(1~8) 改叠层数 | setPlaneCoverage(0~1) 改单层面积 | setParticleRate(n)');
-        console.log('  B/CPU: setSpawnCount(n) | setCpuWork(0~2000) | setColorEnabled(true|false)');
+        console.log('  A/GPU: setHeatPlaneCount(1~8) 改叠层数 | setPlaneCoverage(0~1) 改单层面积');
+        console.log('  B/CPU: setSpawnCount(n) | setCpuWork(0~2000) | setPerCubeBaseOps(n)');
         console.log('  drs  : startDrsToggle() | stopDrsToggle() | setScale(1|0.85|0.7|0.3) | thermalOn() | thermalOff()');
         console.log('  diag : diagFsr() | diagPlane() | getStatus() | logStatus() | exportCsv() | printCsv(n)');
         console.log('  命令通道（控制台看不到 stressTest 时用这个，微信任意上下文都行）:');
@@ -332,14 +315,11 @@ export class StressTestController extends Component {
 
     // ==================== 引用解析 ====================
 
-    /** 把面板上留空的引用按名字补齐（HeatPlane / Plane / Particle） */
+    /** 把面板上留空的引用按名字补齐（HeatPlane / Plane） */
     private _resolveRefs() {
         const scene = this.node.scene;
         if (!this.heatPlane && scene) {
             this.heatPlane = this._findByName(scene, 'HeatPlane') || this._findByName(scene, 'Plane');
-        }
-        if (!this.particleNode && scene) {
-            this.particleNode = this._findByName(scene, 'Particle');
         }
         if (!this.heatPlane) {
             console.error('[StressTest] 找不到平面：场景根节点下需要一块 MeshRenderer（建议命名 HeatPlane）');
@@ -392,12 +372,6 @@ export class StressTestController extends Component {
 
     /** 单层覆盖比例（1 层都太重时的细调旋钮） */
     public setPlaneCoverage(coverage: number): void { this.planes.setCoverage(coverage); }
-
-    /** 粒子发射速率（次要负载，注意粒子模拟在 CPU） */
-    public setParticleRate(rate: number): void { this.planes.setParticleRate(rate); }
-
-    /** 开关粒子节点 */
-    public setParticleActive(on: boolean): void { this.planes.setParticleActive(on); }
 
     // ==================== 对外接口 ====================
 
@@ -626,27 +600,13 @@ export class StressTestController extends Component {
 
     // ==================== UI 回调 ====================
 
-    /** 实例颜色开关（场景 B 用：每 colorSwitchInterval 帧给所有立方体换一次色） */
-    public onColorToggleChanged(toggle: Toggle) {
-        if (!toggle) return;
-        this.enableDynamicColor = toggle.isChecked;
-        console.log('[StressTest] dynamic color = ' + this.enableDynamicColor
-            + (this.cubes.count === 0 ? '（当前没有立方体，无实际开销）' : '（' + this.cubes.count + ' 个立方体，开启后每帧线性增加 CPU）'));
-    }
-
-    /** 开关颜色变换（供控制台调用） */
-    public setColorEnabled(enabled: boolean) {
-        this.enableDynamicColor = enabled;
-        if (this.colorToggle) this.colorToggle.isChecked = enabled;
-        console.log('[StressTest] dynamic color = ' + (enabled ? 'ON' : 'OFF'));
-    }
-
-    /** 把 UI 同步成当前状态（避免启动时 Toggle 显示和实际不一致） */
+    /** 把 UI 同步成当前状态 */
     public refreshUI() {
-        if (!this.colorToggle) return;
-        if (this.colorToggle.isChecked !== this.enableDynamicColor) {
-            // 赋值会触发 check 事件 → onColorToggleChanged，值是幂等的，安全
-            this.colorToggle.isChecked = this.enableDynamicColor;
+        if (this.countSlider) {
+            this.countSlider.setValue(this.spawnCount, true);
+        }
+        if (this.gpuSlider) {
+            this.gpuSlider.setValue(this.heatPlaneCount, true);
         }
     }
 
@@ -671,7 +631,6 @@ export class StressTestController extends Component {
                 perCubeUs: Number(this.cubes.perCubeUs.toFixed(2)),
             },
             cpuWorkPerCube: this.cpuWorkPerCube,
-            particleRate: this.particleRate,
             fps: Number(this.csv.lastFps.toFixed(1)),
             frameRate: game.frameRate,
             shadingScale: pipeline ? Number(pipeline.shadingScale.toFixed(2)) : 'N/A',

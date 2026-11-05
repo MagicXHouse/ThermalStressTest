@@ -333,17 +333,15 @@
     "drsToggleInterval": 10,
     "drsLowScale": 0.3,
     "drsLabel": null,
-    "particleNode": null,
-    "particleRate": -1,
     "thermalMinFrameRate": 30,
     "thermalTriggerPercent": 10,
     "thermalMinScale": 0.3,
     "thermalWarmupSeconds": 20,
     "enableFsr": true,
-    "enableAutoUpgrade": false,
+    "enableAutoUpgrade": true,
     "probeIntervalSeconds": 60,
     "recoveryProbeSeconds": 15,
-    "downgradeOrder": 1,
+    "downgradeOrder": 0,
     "testObjectPrefab": {
       "__uuid__": "95d708e7-cd4e-4fdf-bdbb-4bd05bad6840",
       "__expectedType__": "cc.Prefab"
@@ -353,14 +351,10 @@
     "rotationSpeed": 90,
     "orbitSpeed": 10,
     "enableDynamicColor": false,
-    "colorSwitchInterval": 10,
     "cpuWorkPerCube": 0,
     "perCubeBaseOps": 4000,
     "countSlider": {
       "__id__": 12
-    },
-    "colorToggle": {
-      "__id__": 26
     },
     "gpuSlider": {
       "__id__": 42
@@ -727,7 +721,7 @@
         "__id__": 21
       }
     ],
-    "_active": true,
+    "_active": false,
     "_components": [
       {
         "__id__": 24

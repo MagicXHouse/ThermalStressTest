@@ -1,5 +1,5 @@
 import {
-    Node, Vec3, Vec4, Quat, MeshRenderer, ParticleSystem, Camera, Canvas, Layers,
+    Node, Vec3, Vec4, Quat, MeshRenderer, Camera, Canvas, Layers,
     director, screen, game, instantiate, Color, Material,
 } from 'cc';
 
@@ -21,7 +21,7 @@ export enum TintMode {
  * 从 StressTestController 里拆出来的，行为与拆分前逐字一致。
  *
  * 控制器通过 this.planes.xxx() 调用；它读控制器上的面板字段（heatPlane / planeCoverage /
- * autoFitToCamera / planeDistance / coverageMargin / particleNode / tintMode / pressureRange …）。
+ * autoFitToCamera / planeDistance / coverageMargin / tintMode / pressureRange …）。
  *
  * 关键约束：只有在 applyLoad()/setCount()/setCoverage() 时才动节点 —— update() 里一行都不能有，
  * 这是场景 A "GPU 是唯一瓶颈"（红线 2）的前提。
@@ -55,14 +55,11 @@ export class HeatPlaneRig {
     /** 当前生效层数（CSV 的 load_gpu_layers、getStatus 的 heatPlanes 都读它） */
     public get count (): number { return this._count; }
 
-    /** 重新生成平面层数 + 摆位 + 粒子速率。调参后用控制台调用即可，不用重新构建。 */
+    /** 重新生成平面层数 + 摆位。调参后用控制台调用即可，不用重新构建。 */
     public applyLoad (): void {
         this._syncPlanes();
         if (this._ctrl.autoFitToCamera && this._count > 0) {
             this._fitToCamera();
-        }
-        if (this._ctrl.particleRate >= 0) {
-            this.setParticleRate(this._ctrl.particleRate);
         }
         this._logLoadSummary();
     }
@@ -150,29 +147,6 @@ export class HeatPlaneRig {
         this._ctrl.planeCoverage = Math.max(0.05, Math.min(1, coverage));
         if (this._ctrl.autoFitToCamera && this._count > 0) this._fitToCamera();
         this._logLoadSummary();
-    }
-
-    /**
-     * 粒子发射速率。注意：Cocos 粒子模拟在 CPU 侧，粒子上万时会污染 CPU 瓶颈，
-     * 场景 A 只当"额外填充率"用，主负载始终是平面。
-     */
-    public setParticleRate (rate: number): void {
-        this._ctrl.particleRate = rate;
-        if (!this._ctrl.particleNode) return;
-        const ps = this._ctrl.particleNode.getComponent(ParticleSystem);
-        if (!ps) return;
-        ps.rateOverTime.constant = Math.max(0, rate);
-        if (rate > 0 && !this._ctrl.particleNode.active) this._ctrl.particleNode.active = true;
-        console.log('[StressTest] particle rate = ' + ps.rateOverTime.constant + '/s');
-    }
-
-    /** 开关粒子节点（粒子是次要负载，注意 Cocos 粒子模拟走 CPU） */
-    public setParticleActive (on: boolean): void {
-        if (!this._ctrl.particleNode) return;
-        this._ctrl.particleNode.active = on;
-        const ps = this._ctrl.particleNode.getComponent(ParticleSystem);
-        if (ps && on) ps.play();
-        console.log('[StressTest] particle node active = ' + on);
     }
 
     /**
