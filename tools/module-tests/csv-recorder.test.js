@@ -184,7 +184,33 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
     delete global.wx;
 }
 
+// --- T08：切后台产生的几十秒长间隔必须被丢弃，不能污染 ft_avg/ft_max（S-04 的代码侧保障）---
+{
+    const recGap = new CsvRecorder({ writeCsv: false, planes: { count: 1 }, cubes: { count: 0 }, _log: () => { } });
+    recGap.start();
+    // 稳定 5.2 秒（16ms/帧）
+    for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recGap.tick(); }
+    const before = recGap.gaps;
+    // 模拟切后台 30 秒：下一 tick 的 delta = 30000ms
+    fakeNow += 30000;
+    recGap.tick();
+    check('T08: 30s 长间隔被计数（不 push）', recGap.gaps === before + 1, 'gaps=' + recGap.gaps);
+
+    // 回来后继续正常跑 5.2 秒
+    const logs = [];
+    const origLog2 = console.log;
+    console.log = (...a) => { logs.push(a.join(' ')); };
+    for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recGap.tick(); }
+    console.log = origLog2;
+
+    const lines = logs.filter(l => l.startsWith('[StressTest] ') && l.split(',').length === 15);
+    const parsed = lines.map(l => l.replace('[StressTest] ', '').split(','));
+    const maxFt = Math.max(...parsed.map(c => parseFloat(c[5])).filter(v => !isNaN(v)));
+    const avgFt = Math.max(...parsed.map(c => parseFloat(c[3])).filter(v => !isNaN(v)));
+    check('T08: 切后台后 ft_max 不含 30000ms 脏值', maxFt < 1000, 'ft_max=' + maxFt);
+    check('T08: 切后台后 ft_avg 不被拉高', avgFt < 100, 'ft_avg=' + avgFt);
+}
+
 global.performance = realPerf;
-const failed = results.filter(r => !r.ok);
-console.log('\n==== 结果: ' + (results.length - failed.length) + '/' + results.length + ' 通过 ====');
+const failed = results.filter(r => !r.ok);console.log('\n==== 结果: ' + (results.length - failed.length) + '/' + results.length + ' 通过 ====');
 if (failed.length) { console.log('失败项: ' + failed.map(f => f.name).join(' | ')); process.exitCode = 1; }

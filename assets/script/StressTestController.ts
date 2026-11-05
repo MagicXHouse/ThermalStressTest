@@ -580,6 +580,8 @@ export class StressTestController extends Component {
             thermalScale: Number(state.shadingScale),
             sampling: this.csv.sampling,
             csvRows: this.csv.rowCount,
+            /** 采样期间被丢弃的"长间隔"个数（切后台/断点）；S-04 判据用 */
+            csvGaps: this.csv.gaps,
             thermalOn: this.enableThermalControl,
             /** 当前降档顺序（面板值；运行时 setDowngradeOrder 会同步它） */
             downgradeOrder: this.downgradeOrder === DowngradeOrder.FrameRateFirst ? 'frameRate-first' : 'scale-first',

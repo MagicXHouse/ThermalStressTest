@@ -43,6 +43,20 @@ export class CsvRecorder {
      */
     private static readonly DROP_TOLERANCE = 1.05;
 
+    /**
+     * 超过这个间隔的"帧"不是帧（切后台、断点、GC 长停顿），直接丢弃。
+     * 与引擎侧 `FrameTimeSampler.MAX_FRAME_DELTA_MS` 保持同一个值：
+     * 温控内部丢弃了它，但 CSV 若照收，会把这个 30 秒的间隔写进
+     * ft_avg/ft_max/jank/drop_rate，一行数据全废（S-04 就是查这个）。
+     */
+    private static readonly MAX_FRAME_DELTA_MS = 1000;
+
+    /** 累计丢弃的长间隔个数（切后台次数），getStatus().csvGaps 可查 */
+    private _gapCount = 0;
+
+    /** 采样开始后丢弃过几次"长间隔" */
+    public get gaps (): number { return this._gapCount; }
+
     /** 宿主控制器（用 any：拆模块时不引入类型环，且要读私有字段） */
     private _ctrl: any;
 
@@ -101,7 +115,18 @@ export class CsvRecorder {
         if (!this._sampling) return;
         const now = performance.now();
         if (this._lastFrameNow > 0) {
-            this._windowFrames.push(now - this._lastFrameNow);
+            const delta = now - this._lastFrameNow;
+            if (delta > CsvRecorder.MAX_FRAME_DELTA_MS) {
+                // 切后台/断点回来的第一个间隔是"几十秒"，它会把 ft_avg/ft_max/drop_rate 全部污染。
+                // 丢弃它（不 push），只记一次日志和计数；下一帧的间隔仍然正确。
+                this._gapCount++;
+                if (this._gapCount <= 3) {
+                    console.log('[StressTest] 忽略 ' + Math.round(delta)
+                        + 'ms 的长间隔（切后台/断点），不计入统计；累计 ' + this._gapCount + ' 次');
+                }
+            } else {
+                this._windowFrames.push(delta);
+            }
         }
         this._lastFrameNow = now;
         if (now - this._windowStart >= 5000) {   // 每 5 秒一行，跟 adb 温度采样对齐
