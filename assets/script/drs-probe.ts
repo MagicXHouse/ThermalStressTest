@@ -24,10 +24,8 @@ export class DrsProbe {
      * 每次切换都会打印**上一窗口**的实测 fps，所以控制台里能直接读出两档的差值；
      * CSV 的 shading_scale 列也会变成 1.00 / 0.30 的方波，事后画图就能对齐。
      *
-     * 关于 FSR：4.0 里 FSR 是 post-process（PostProcess/FSR），而 thermal 的 FSR 钩子写的是
-     * camera.pipelineSettings.fsr —— 这个字段在当前引擎里没有读取方，调 setFsrEnabled 只会每 10 秒
-     * 刷一条 "BuiltinPipelineSettings is unavailable" 警告。所以这里只切 shadingScale，
-     * 测出来的是**纯降分辨率**的收益（这也是影响帧率的主体）。
+     * 关于 FSR：FSR 跟随实际 shadingScale（降档就升采样），所以这个循环测到的是
+     * "降分辨率 + 升采样"的组合收益；要单独看纯降分辨率，先 thermal.setFsrEnabled(false)。
      */
     public start (): void {
         this.stop();
@@ -41,8 +39,8 @@ export class DrsProbe {
         if (!this._ctrl.drsLabel) {
             console.log('[StressTest] 想看屏幕上的档位数字就把一个 Label 拖到 Drs Label 槽');
         }
-        console.log('[StressTest] 注：FSR 不参与切换（4.0 的 FSR 是 post-process，thermal 的钩子在当前引擎是空转），'
-            + '所以这是纯 shadingScale 的 A/B');
+        console.log('[StressTest] 注：FSR 跟随实际 shadingScale 自动生效（降档就升采样）；'
+            + '要做"纯降分辨率"的干净 A/B，先 thermal.setFsrEnabled(false)');
         if (this._ctrl.enableThermalControl) {
             console.warn('[StressTest] 温控也会写 shadingScale，会和这个循环抢；做 A/B 时请把 enableThermalControl 关掉');
         }

@@ -517,7 +517,9 @@ export class StressTestController extends Component {
     /** 返回一份状态快照（不打印），给外部脚本/日志用 */
     public getStatus() {
         const pipeline = (director as any).root?.pipeline;
-        const state = thermal.getState();
+        // thermal 可能被功能裁剪掉（cc.thermal === undefined），这里不能直接调 getState()
+        const th: any = thermal as any;
+        const state = th ? th.getState() : { level: -1, shadingScale: 1, frameRate: 0, enabled: false };
         return {
             mode: this.cubes.count > 0 ? 'B/CPU' : 'A/GPU',
             heatPlanes: this.planes.count,

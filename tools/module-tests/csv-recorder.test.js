@@ -125,6 +125,22 @@ const line30 = captured.find(l => l.startsWith('[StressTest] ') && l.split(',').
 check('降帧后 frame_rate 列变成 30', line30 && line30.split(',')[11] === '30', line30 ? line30.split(',')[11] : 'none');
 check('降帧后 fps_std 仍是有效数值', line30 && !Number.isNaN(parseFloat(line30.split(',')[12])), line30 ? line30.split(',')[12] : 'none');
 
+// --- 7c) P1-1 回归：掉帧判据有 5% 容差，满帧 60fps（16.67ms/帧）不应报掉帧 ---
+{
+    const rec60 = new CsvRecorder({ writeCsv: false, planes: { count: 1 }, cubes: { count: 0 }, _log: () => { } });
+    ccStub.game.frameRate = 60;
+    rec60.start();
+    captured = [];
+    console.log = (...a) => { captured.push(a.join(' ')); };
+    for (let t = 0; t < 5200; t += 1000 / 60) { fakeNow += 1000 / 60; rec60.tick(); }
+    console.log = origLog;
+    const l60 = captured.find(l => l.startsWith('[StressTest] ') && l.split(',').length === 15);
+    const q = l60 ? l60.replace('[StressTest] ', '').split(',') : null;
+    check('P1-1: 满帧 60fps 的 drop_rate = 0（容差生效）', q && parseFloat(q[13]) === 0, q ? q[13] : 'none');
+    check('P1-1: 满帧 60fps 的 drop_rate_cur = 0', q && parseFloat(q[14]) === 0, q ? q[14] : 'none');
+    rec60.stop();
+}
+
 // --- 8) stop 后不再出数据 ---
 rec.stop();
 const beforeStop = rec.rowCount;

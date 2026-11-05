@@ -4,6 +4,16 @@ import { director, Material, resources, thermal } from 'cc';
 export const THERMAL_LEVEL_NAMES = ['Normal', 'Hot', 'Emergency'];
 
 /**
+ * 取 thermal API；模块被功能裁剪掉时 `cc.thermal` 是 undefined。
+ * 注意：不能写 `typeof thermal.setFsrMaterial === 'function'` —— thermal 为 undefined 时，
+ * 这个成员访问本身就会抛 `TypeError: Cannot read properties of undefined`。
+ */
+function thermalApi (): any {
+    const th: any = thermal as any;
+    return th && typeof th.enable === 'function' ? th : null;
+}
+
+/**
  * 降档顺序预设（对应引擎 ThermalConfig.downgradeOrder）。
  * 只有开发商清楚自己的游戏对分辨率还是对帧率更敏感，所以这个是开放项。
  */
@@ -35,10 +45,14 @@ export class ThermalBridge {
     /**
      * 加载 FSR 材质（`assets/resources/fsr/builtin-fsr.mtl`，指向自定义管线用的 `fsr1.effect`），
      * 并交给 thermal（`setFsrMaterial`）。
+     * thermal 模块被裁剪时直接跳过（不抛异常），保证"温控关"的包也能正常启动。
      */
     public initFsr (done: () => void): void {
-        if (typeof (thermal as any).setFsrMaterial !== 'function') {
-            console.warn('[StressTest] thermal.setFsrMaterial is unavailable; rebuild the custom engine to enable FSR.');
+        const th = thermalApi();
+        if (!th || typeof th.setFsrMaterial !== 'function') {
+            console.warn('[StressTest] thermal.setFsrMaterial is unavailable'
+                + (th ? '（引擎版本过旧，需重新构建自定义引擎）' : '（thermal 模块被功能裁剪，构建时未启用 thermal feature）')
+                + '；跳过 FSR，降分辨率将回退为普通降采样。');
             done();
             return;
         }
@@ -48,7 +62,7 @@ export class ThermalBridge {
                 done();
                 return;
             }
-            (thermal as any).setFsrMaterial(material);
+            th.setFsrMaterial(material);
             this._fsrReady = true;
             console.log('[StressTest] FSR material loaded: ' + material.name
                 + ' effect=' + (material.effectAsset ? material.effectAsset.name : '<null>'));
@@ -66,6 +80,12 @@ export class ThermalBridge {
      */
     public on (): void {
         const c = this._ctrl;
+        const th = thermalApi();
+        if (!th) {
+            console.error('[StressTest] thermal 模块不可用（构建时未启用 thermal feature）；'
+                + '本次数据只能当作"温控关"用。要测温控请启用 thermal feature 重新构建。');
+            return;
+        }
         const cfg: any = {
             minFrameRate: c.thermalMinFrameRate,
             triggerPercent: c.thermalTriggerPercent,
@@ -80,18 +100,18 @@ export class ThermalBridge {
             // 降分辨率时同时开 FSR 升采样（否则降档就是纯降采样，画面会糊）
             enableFsr: true,
         };
-        thermal.enable(cfg);
-        thermal.onLevelChange((level) => {
+        th.enable(cfg);
+        th.onLevelChange((level: number) => {
             console.log('[StressTest] thermal level changed -> ' + THERMAL_LEVEL_NAMES[level]);
         });
-        if (typeof (thermal as any).onAction === 'function') {
-            (thermal as any).onAction((e: any) => {
+        if (typeof th.onAction === 'function') {
+            th.onAction((e: any) => {
                 c._log('thermal ' + e.direction + ' ' + e.lever + ' ' + e.from + ' -> ' + e.to
                     + ' level=' + e.level
                     + (e.avgMs && e.targetMs ? (' avg=' + e.avgMs.toFixed(2) + 'ms target=' + e.targetMs.toFixed(2) + 'ms') : ''));
             });
         }
-        const state = thermal.getState();
+        const state = th.getState();
         console.log('[StressTest] thermal ON: level=' + state.level
             + ', scale=' + Number(state.shadingScale).toFixed(2)
             + ', fps=' + state.frameRate
@@ -101,29 +121,39 @@ export class ThermalBridge {
 
     /** 关闭温控，帧率/分辨率还原 */
     public off (): void {
-        thermal.disable();
+        const th = thermalApi();
+        if (th) th.disable();
         console.log('[StressTest] thermal OFF; frame rate and scale restored');
     }
 
     /** 手动降一档（走 ScaleAction 优先） */
     public down (): boolean {
-        const ok = thermal.stepDown();
+        const th = thermalApi();
+        if (!th) return false;
+        const ok = th.stepDown();
         console.log('[StressTest] manual thermal down: ' + (ok ? 'ok' : 'floor')
-            + '; level=' + THERMAL_LEVEL_NAMES[thermal.getLevel()]);
+            + '; level=' + THERMAL_LEVEL_NAMES[th.getLevel()]);
         return ok;
     }
 
     /** 手动升一档 */
     public up (): boolean {
-        const ok = thermal.stepUp();
+        const th = thermalApi();
+        if (!th) return false;
+        const ok = th.stepUp();
         console.log('[StressTest] manual thermal up: ' + (ok ? 'ok' : 'top')
-            + '; level=' + THERMAL_LEVEL_NAMES[thermal.getLevel()]);
+            + '; level=' + THERMAL_LEVEL_NAMES[th.getLevel()]);
         return ok;
     }
 
-    /** 读当前温控档位 */
+    /** 读当前温控档位（模块被裁剪时返回 -1） */
     public level (): number {
-        const level = thermal.getLevel();
+        const th = thermalApi();
+        if (!th) {
+            console.log('[StressTest] thermal level: N/A（thermal 模块未启用）');
+            return -1;
+        }
+        const level = th.getLevel();
         console.log('[StressTest] thermal level: ' + THERMAL_LEVEL_NAMES[level] + ' (' + level + ')');
         return level;
     }
@@ -131,7 +161,7 @@ export class ThermalBridge {
     /** 运行时改降档阈值（%），真机上调"多容易触发降档"，不用重新构建 */
     public setTriggerPercent (percent: number): void {
         this._ctrl.thermalTriggerPercent = percent;
-        (thermal as any).setThreshold?.(percent);
+        thermalApi()?.setThreshold?.(percent);
         console.log('[StressTest] thermal triggerPercent = ' + percent + '%');
     }
 
@@ -167,8 +197,9 @@ export class ThermalBridge {
             }
             : null;
 
-        // thermal 侧状态（内部字段，仅供调试）
-        const fsrImpl: any = (thermal as any)._fsr;
+        // thermal 侧状态（内部字段，仅供调试）；模块被裁剪时为 null
+        const th = thermalApi();
+        const fsrImpl: any = th ? th._fsr : null;
         out.thermalFsr = fsrImpl
             ? {
                 enabled: !!fsrImpl._enabled,

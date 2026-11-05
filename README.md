@@ -24,6 +24,8 @@
 
 - 代码开关：`enableThermalControl` 属性（勾选 = 开温控）。构建两个包做 A/B 对比（开/关温控）。
 - 降档顺序：先降 `shadingScale`（场景 A 要验证的杠杆），到底后再降帧率 `game.frameRate`。
+- **thermal 模块被功能裁剪时工程不会崩**：`cc.thermal === undefined` 时 `thermalBridge` 会跳过 FSR/温控并打印告警，
+  只是这组数据只能当"温控关"用（`stressTest.thermalLevel()` 返回 -1）。
 
 ### 控制台入口（运行时挂 `globalThis.stressTest`）
 
@@ -50,8 +52,8 @@ load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate,drop_rate
 | `ft_p95_ms` / `ft_max_ms` | 95 分位 / 最慢一帧的帧时间 |
 | `jank_gt_2x` | 超过 2 倍预算（>33.3ms）的帧数，判真卡顿 |
 | `fps_std` | 窗口内逐帧 FPS 标准差（抖动） |
-| `drop_rate` | 相对**采样起点预算**（60fps → 16.667ms）的掉帧占比 %。口径固定，跨温控阶段可比 |
-| `drop_rate_cur` | 相对**当前目标帧率**（1000/game.frameRate）的掉帧占比 %。温控降帧后应用它判"当前档位稳不稳" |
+| `drop_rate` | 相对**采样起点预算**（60fps → 16.667ms）的掉帧占比 %。口径固定，跨温控阶段可比。判据含 **5% 容差**（16.667 → 17.5ms） |
+| `drop_rate_cur` | 相对**当前目标帧率**（1000/game.frameRate）的掉帧占比 %。温控降帧后应用它判"当前档位稳不稳"。同样含 5% 容差 |
 | `load_gpu_layers` | 实际参与压测的平面层数（历史列名，场景 A 用） |
 | `shading_scale` / `frame_rate` | 当前 DRS 档 / 帧率档 |
 
@@ -74,15 +76,20 @@ CSV 写入小游戏沙箱 `wx.env.USER_DATA_PATH/`：
 
 `tools/eval/_eval_thermal.py`：把温控前/后两组 CSV + 两份温度日志拉齐，按方案 §4.5 出判定。
 
-- **合入门槛（判定项）**：平均温度下降（核心）、掉帧率下降（用 `drop_rate_cur`）、帧率标准差下降
-- **仅参考（不判定）**：平均帧率、p95 帧时间 —— 降帧率杠杆下这两项天然恶化
-- 温度阈值 `TEMP_DROP_MIN`、抖动阈值 `STD_DROP_MIN` 在脚本顶部，实测后标定
+- **合入门槛（判定项）**：两轮负载一致（前置校验）、平均温度下降（核心，取**最后 15 分钟稳态窗口**）、
+  掉帧率下降（用 `drop_rate_cur`）、帧率标准差下降
+- **仅参考（不判定）**：平均帧率、p95 帧时间 —— 降帧率杠杆下这两项天然恶化；
+  另打印"相对起点的升温幅度"，用来抵消两轮起始温度/室温差异
+- 温度阈值 `TEMP_DROP_MIN`、抖动阈值 `STD_DROP_MIN`、稳态窗口 `STEADY_MINUTES` 在脚本顶部，实测后标定
+- 两轮 `load_gpu_layers` / `spawn_count` 不一致（或某一轮中途改过负载）会直接判 FAIL 并提示"结论无效"
 - 旧版 14 列 CSV 会走兼容分支：提示缺 `drop_rate_cur`，回退用 `drop_rate` 判并警告"结论可能误判"
+- 数据路径可用环境变量覆盖（`THERMAL_BASE_CSV` / `THERMAL_THERM_CSV` / `THERMAL_BASE_TEMP` / `THERMAL_THERM_TEMP`），
+  不设则用脚本顶部默认值
 
 改脚本后跑一遍自测（合成数据，不需要真机）：
 
 ```bash
-python tools/eval/selftest.py     # 覆盖 15 列正常口径 + 14 列兼容分支
+python tools/eval/selftest.py     # 15 列正常口径 + 14 列兼容分支 + 负载不一致分支
 ```
 
 ## 七、目录结构

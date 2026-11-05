@@ -128,6 +128,36 @@ check('diagFsr 返回对象', diag && typeof diag === 'object');
 check('diagFsr.pipelineClass 有值', diag.pipelineClass === 'WebPipeline', 'value=' + diag.pipelineClass);
 check('diagFsr.cameraName 为 null 字串', diag.cameraName === 'null');
 
+// --- 11) P1-2 回归：thermal 被功能裁剪（cc.thermal === undefined）时不能崩 ---
+{
+    const saved = ccStub.thermal;
+    ccStub.thermal = undefined;
+    const b = new ThermalBridge(ctrl);
+    let done = 0;
+    let d = null, u = null, lv = null, diag2 = null;
+    let thrown = null;
+    try {
+        b.initFsr(() => { done++; });
+        b.on();                    // 应打印错误后返回，不抛
+        b.off();
+        d = b.down();
+        u = b.up();
+        lv = b.level();
+        b.setTriggerPercent(7);
+        diag2 = b.diagFsr();
+    } catch (e) {
+        thrown = e;
+    } finally {
+        ccStub.thermal = saved;
+    }
+    check('thermal 缺失: 全流程不抛异常', thrown === null, thrown ? String(thrown.message) : 'ok');
+    check('thermal 缺失: initFsr 仍回调一次（不卡住启动流程）', done === 1, 'done=' + done);
+    check('thermal 缺失: down/up 返回 false', d === false && u === false, d + '/' + u);
+    check('thermal 缺失: level() 返回 -1', lv === -1, 'level=' + lv);
+    check('thermal 缺失: diagFsr 仍返回结构', !!diag2 && diag2.pipelineClass === 'WebPipeline');
+    check('thermal 缺失: diagFsr.thermalFsr = null', diag2 && diag2.thermalFsr === null);
+}
+
 const failed = results.filter(r => !r.ok);
 console.log('\n==== 结果: ' + (results.length - failed.length) + '/' + results.length + ' 通过 ====');
 if (failed.length) { console.log('失败项: ' + failed.map(f => f.name).join(' | ')); process.exitCode = 1; }

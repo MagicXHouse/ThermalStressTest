@@ -21,9 +21,8 @@ import { game, director } from 'cc';
 // shading_scale 当前 DRS 缩放档（温控降过档会变 0.85/0.7/0.3）
 // frame_rate    game.frameRate 帧率档位（不是实测 fps）
 // fps_std       窗口内逐帧 FPS 的标准差 = 抖动
-// drop_rate     超过预算的帧占比 %；满帧时因 vsync 抖动会恒在 60% 左右，参考价值低
-// drop_rate     超过"采样起点预算"的帧占比 %。口径固定，跨温控阶段可比；但目标帧率被降档后
-//               满载帧也会被算成掉帧，判"当前档位稳不稳"请用最后一列
+// drop_rate     超过"采样起点预算"的帧占比 %，跨温控阶段可比；判定含 5% 容差（见 _flushRow 的 DROP_TOLERANCE）
+//               —— 不加容差时，VSYNC 抖动 + performance.now() 的浮点误差会让"满帧 60fps"也报 ~59% 掉帧
 // drop_rate_cur 超过"当前目标帧率（1000/game.frameRate）"的帧占比 %。温控降帧后它应当下降，
 //               这是场景 B「温控后掉帧率下降」这条门槛的判据
 export const CSV_HEADER = 'elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jank_gt_2x,battery_pct,load_gpu_layers,spawn_count,shading_scale,frame_rate,fps_std,drop_rate,drop_rate_cur';
@@ -31,6 +30,18 @@ export const CSV_HEADER = 'elapsed_s,ts_ms,fps,ft_avg_ms,ft_p95_ms,ft_max_ms,jan
 export class CsvRecorder {
     /** 定时快照的固定文件名（覆盖写）：崩溃最多丢一个 60s 周期 */
     private static readonly LATEST_FILE = 'thermal_latest.csv';
+
+    /**
+     * 掉帧判据的容差系数（1.05 = 允许超出预算 5%）。
+     *
+     * 为什么必须有：判据原来是 `frames[i] > budget`，而 budget = 1000 / game.frameRate，
+     * 帧间隔来自 performance.now() 差值累加，天然带 1e-13 量级浮点误差
+     * （实测 16.66666666666697 > 16.666666666666668）→ 连"满帧 60fps 且零抖动"都会被算成 59% 掉帧；
+     * 再加上 VSYNC/限帧抖动，任何稳定档位的掉帧率都会在 50%~100% 乱跳，
+     * 而"掉帧率下降"是合入门槛之一，噪声会把结论带偏。
+     * 5% 容差（60fps 下 16.667 → 17.5ms）只吃掉测量噪声，不会漏掉真正的掉帧。
+     */
+    private static readonly DROP_TOLERANCE = 1.05;
 
     /** 宿主控制器（用 any：拆模块时不引入类型环，且要读私有字段） */
     private _ctrl: any;
@@ -236,8 +247,8 @@ export class CsvRecorder {
 
     /**
      * 把当前 5 秒窗口的统计压成一行 CSV。
-     * fps_std 用的是"逐帧 FPS 的标准差"；drop_rate 在满帧时因 vsync 抖动会虚高到 60% 左右，
-     * 判卡顿请优先看 jank_gt_2x / ft_p95 / ft_max。
+     * fps_std 用的是"逐帧 FPS 的标准差"；两种掉帧率都按 DROP_TOLERANCE（5%）判，压掉 vsync/浮点噪声。
+     * 判"真卡顿"仍看 jank_gt_2x（>2 倍预算）/ ft_p95 / ft_max。
      */
     private _flushRow (now: number): void {
         const frames = this._windowFrames;
@@ -262,6 +273,10 @@ export class CsvRecorder {
         // 满载的 33.3ms 帧会被算成 100% 掉帧（看起来"温控后掉帧率反而暴涨"）。
         // 所以额外输出 drop_rate_cur：预算取**当前** game.frameRate，用于判断"当前档位下稳不稳"。
         const curBudget = 1000 / (Number(game.frameRate) || 60);
+        // 两种掉帧率都带 5% 容差：VSYNC 抖动 + 浮点累加误差会让"满帧"也略超预算，
+        // 不加容差时满帧 60fps 会报 ~59%、平稳 30fps 会报 100%（见 DROP_TOLERANCE 注释）。
+        const dropLimit = budget * CsvRecorder.DROP_TOLERANCE;
+        const dropLimitCur = curBudget * CsvRecorder.DROP_TOLERANCE;
         let jank = 0;
         let drop = 0;
         let dropCur = 0;
@@ -269,8 +284,8 @@ export class CsvRecorder {
         let fpsSumSq = 0;
         for (let i = 0; i < n; i++) {
             if (frames[i] > budget2x) jank++;
-            if (frames[i] > budget) drop++;
-            if (frames[i] > curBudget) dropCur++;
+            if (frames[i] > dropLimit) drop++;
+            if (frames[i] > dropLimitCur) dropCur++;
             const f = 1000 / frames[i];
             fpsSum += f;
             fpsSumSq += f * f;
