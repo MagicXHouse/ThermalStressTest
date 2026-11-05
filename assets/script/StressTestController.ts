@@ -118,6 +118,9 @@ export class StressTestController extends Component {
     @property({ tooltip: '温控预热时长（秒），会传给 thermal.warmupSeconds；同时作为"延后开始采样"的时长，避免预热期污染 baseline' })
     public thermalWarmupSeconds: number = 20;
 
+    @property({ tooltip: '降分辨率时是否开 FSR 升采样。关掉 = 纯降采样（更清晰度差但更省 GPU）；真机上若 FSR 开销盖过降采样收益，勾掉它' })
+    public enableFsr: boolean = true;
+
     // ---- 试探式自动升档 ----
 
     @property({ tooltip: '是否启用试探式自动升档；false = 只降不升' })
@@ -487,6 +490,19 @@ export class StressTestController extends Component {
 
     /** 运行时改降档阈值（%），真机上调"多容易触发降档"，不用重新构建 */
     public setTriggerPercent(percent: number): void { this.thermalBridge.setTriggerPercent(percent); }
+
+    /**
+     * 运行时开关 FSR（不重新构建、不改变当前 shadingScale）。
+     * 同档位 A/B：`thermalDown()` 到 0.85 → 记一段 → `setFsrEnabled(false)` → 再记一段，
+     * 两段 ft_avg 的差就是 FSR 在该档的净开销。
+     */
+    public setFsrEnabled(enabled: boolean): void { this.thermalBridge.setFsrEnabled(enabled); }
+
+    /** 运行时改 FSR 阈值（`shadingScale <= minScale` 才开），验证 0.85 档纯降采样是否更划算 */
+    public setFsrMinScale(minScale: number): void { this.thermalBridge.setFsrMinScale(minScale); }
+
+    /** 引擎 thermal 门面（调试逃生口，可调 setFsrMaterial / getState 等未包装的 API） */
+    public getThermal(): any { return this.thermalBridge.api(); }
 
     // ==================== UI 回调 ====================
 

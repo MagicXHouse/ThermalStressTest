@@ -97,8 +97,9 @@ export class ThermalBridge {
             // 降档顺序是开放项：先降分辨率（默认）还是先降帧率，由面板决定
             downgradeOrder: c.downgradeOrder === DowngradeOrder.FrameRateFirst ? 'frameRate-first' : 'scale-first',
             enableScale: true,
-            // 降分辨率时同时开 FSR 升采样（否则降档就是纯降采样，画面会糊）
-            enableFsr: true,
+            // 降分辨率时是否开 FSR 升采样，由面板 enableFsr 决定（关掉 = 纯降采样）。
+            // 用 !== false 兜底：老场景没有这个属性时按"开"处理，行为与之前一致。
+            enableFsr: c.enableFsr !== false,
         };
         th.enable(cfg);
         th.onLevelChange((level: number) => {
@@ -116,7 +117,7 @@ export class ThermalBridge {
             + ', scale=' + Number(state.shadingScale).toFixed(2)
             + ', fps=' + state.frameRate
             + ', trigger=' + c.thermalTriggerPercent + '%'
-            + ', FSR=' + (this._fsrReady ? 'READY' : 'PENDING'));
+            + ', FSR=' + (cfg.enableFsr ? (this._fsrReady ? 'READY' : 'PENDING') : 'OFF（面板已关，纯降采样）'));
     }
 
     /** 关闭温控，帧率/分辨率还原 */
@@ -144,6 +145,50 @@ export class ThermalBridge {
         console.log('[StressTest] manual thermal up: ' + (ok ? 'ok' : 'top')
             + '; level=' + THERMAL_LEVEL_NAMES[th.getLevel()]);
         return ok;
+    }
+
+    /** 引擎 thermal 门面（调试逃生口：控制台里能直接调引擎 API，比如 getThermal().setFsrMaterial(m)） */
+    public api (): any {
+        return thermalApi();
+    }
+
+    /**
+     * 运行时开关 FSR，不需要重新构建。
+     *
+     * 开关**不影响 shadingScale**：关闭只还原相机原来的 FSR 设置，当前档位不变。
+     * 所以这是"同档位 A/B"最干净的做法：
+     *   thermalDown() 到 0.85（FSR 自动开）→ 记 ft_avg → setFsrEnabled(false) → 再记 ft_avg
+     * 两者之差就是 FSR 在这一档的净开销。
+     */
+    public setFsrEnabled (enabled: boolean): void {
+        const th = thermalApi();
+        if (!th || typeof th.setFsrEnabled !== 'function') {
+            console.warn('[StressTest] thermal.setFsrEnabled 不可用（引擎版本过旧或被裁剪）');
+            return;
+        }
+        th.setFsrEnabled(enabled);
+        const fsrImpl: any = th._fsr;
+        const settings: any = fsrImpl ? fsrImpl._settings : null;
+        console.log('[StressTest] FSR = ' + (enabled ? 'ON' : 'OFF')
+            + ' | scale=' + Number(th.getShadingScale()).toFixed(2)
+            + ' | camera.fsr=' + (settings && settings.fsr
+                ? (settings.fsr.enabled ? 'on' : 'off')
+                : (fsrImpl ? 'no-settings' : 'no-impl')));
+    }
+
+    /**
+     * 运行时改 FSR 阈值（`shadingScale <= minScale` 才开 FSR）。
+     * 用来验证"0.85 档不开 FSR、0.70 档才开"是否更划算，同样不用重新构建。
+     */
+    public setFsrMinScale (minScale: number): void {
+        const th = thermalApi();
+        if (!th || typeof th.setFsrMinScale !== 'function') {
+            console.warn('[StressTest] thermal.setFsrMinScale 不可用（引擎版本过旧或被裁剪）');
+            return;
+        }
+        th.setFsrMinScale(minScale);
+        console.log('[StressTest] fsrMinScale = ' + minScale
+            + '（shadingScale <= ' + minScale + ' 才开 FSR）');
     }
 
     /** 读当前温控档位（模块被裁剪时返回 -1） */

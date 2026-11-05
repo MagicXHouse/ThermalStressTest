@@ -4,7 +4,7 @@ const path = require('path');
 const Module = require('module');
 const ts = require(process.env.CC_ENGINE_TYPESCRIPT || 'D:/proj/cocos/cocos4/node_modules/typescript');
 
-const calls = { enable: [], disable: 0, stepDown: 0, stepUp: 0, setThreshold: [], levelChange: 0, action: 0 };
+const calls = { enable: [], disable: 0, stepDown: 0, stepUp: 0, setThreshold: [], levelChange: 0, action: 0, fsrEnabled: [], fsrMin: [] };
 let fakeLevel = 0;
 let fakeState = { level: 0, frameRate: 60, shadingScale: 1.0, scaleEnabled: true, enabled: true, paused: false };
 
@@ -15,10 +15,15 @@ const thermalStub = {
     stepUp() { calls.stepUp++; return true; },
     getLevel() { return fakeLevel; },
     getState() { return fakeState; },
+    getShadingScale() { return 0.85; },
     onLevelChange(cb) { calls.levelChange++; },
     onAction(cb) { calls.action++; },
     setThreshold(p) { calls.setThreshold.push(p); },
     setFsrMaterial() { },
+    setFsrEnabled(v) { calls.fsrEnabled.push(v); },
+    setFsrMinScale(v) { calls.fsrMin.push(v); },
+    // 供 setFsrEnabled 的日志读取
+    _fsr: { _settings: { fsr: { enabled: false } } },
 };
 
 const ccStub = {
@@ -66,6 +71,7 @@ const ctrl = {
     thermalTriggerPercent: 10,
     thermalMinScale: 0.3,
     thermalWarmupSeconds: 20,
+    enableFsr: true,
     enableAutoUpgrade: true,
     probeIntervalSeconds: 45,
     recoveryProbeSeconds: 12,
@@ -101,6 +107,28 @@ thermalStub.enable = (c2) => { calls2.enable.push(c2); };
 const bridge2 = new ThermalBridge(ctrl);
 bridge2.on();
 check('cfg.downgradeOrder 切到 frameRate-first', calls2.enable[0] && calls2.enable[0].downgradeOrder === 'frameRate-first', calls2.enable[0] ? calls2.enable[0].downgradeOrder : 'none');
+
+// 面板 enableFsr=false 时应透传 false（纯降采样），且 ON 日志要写明已关
+ctrl.enableFsr = false;
+const calls3 = { enable: [] };
+const logs3 = [];
+thermalStub.enable = (c3) => { calls3.enable.push(c3); };
+const bridge3 = new ThermalBridge(ctrl);
+const savedLog3 = console.log; console.log = (m) => logs3.push(String(m));
+bridge3.on();
+console.log = savedLog3;
+check('cfg.enableFsr 透传 false（面板关闭 FSR）', calls3.enable[0] && calls3.enable[0].enableFsr === false,
+    calls3.enable[0] ? String(calls3.enable[0].enableFsr) : 'none');
+check('FSR 关闭时 ON 日志标注 OFF', logs3.some((l) => l.indexOf('FSR=OFF') >= 0));
+ctrl.enableFsr = true;
+
+// 运行时开关 / 阈值改动应透传到引擎
+bridge.setFsrEnabled(false);
+bridge.setFsrEnabled(true);
+check('setFsrEnabled 透传到引擎（先关后开）', calls.fsrEnabled.join(',') === 'false,true', calls.fsrEnabled.join(','));
+bridge.setFsrMinScale(0.7);
+check('setFsrMinScale 透传到引擎', calls.fsrMin[0] === 0.7, String(calls.fsrMin[0]));
+check('api() 返回引擎门面（控制器 getThermal 的逃生口）', bridge.api() === thermalStub);
 
 bridge.off();
 check('off 调用 thermal.disable', calls.disable === 1);
