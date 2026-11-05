@@ -82,10 +82,13 @@ export class CpuCubes {
         }
         if (count > 0) {
             const perCube = Math.floor(this._ctrl.perCubeBaseOps + this._ctrl.cpuWorkPerCube);
+            const planes = this._ctrl.planes ? this._ctrl.planes.count : 0;
             console.log('[StressTest] object count = ' + count);
-            console.warn('[StressTest] 已启用 CPU 负载（' + count + ' 个立方体 × 每帧 ' + perCube
-                + ' 次浮点运算 ≈ ' + (count * perCube) + ' 次/帧）。'
-                + '这组数据反映 CPU 瓶颈，不要用来评估 GPU / 降分辨率收益。');
+            // 混合负载是合法配置（GPU 层数 + CPU 立方体可同时开），这里只报告当前构成，不做"该/不该"的暗示
+            console.log('[StressTest] CPU 负载：' + count + ' 个立方体 × 每帧 ' + perCube
+                + ' 次浮点运算 ≈ ' + (count * perCube) + ' 次/帧'
+                + '；当前负载 = GPU ' + planes + ' 层 + CPU ' + count + ' 个'
+                + (planes > 0 ? '（混合负载）' : '（纯 CPU）'));
         }
     }
 
