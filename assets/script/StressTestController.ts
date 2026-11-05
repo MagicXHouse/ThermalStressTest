@@ -296,6 +296,8 @@ export class StressTestController extends Component {
         console.log('  B/CPU: setSpawnCount(n) | setCpuWork(0~2000) | setColorEnabled(true|false)');
         console.log('  drs  : startDrsToggle() | stopDrsToggle() | setScale(1|0.85|0.7|0.3) | thermalOn() | thermalOff()');
         console.log('  diag : diagFsr() | diagPlane() | getStatus() | logStatus() | exportCsv() | printCsv(n)');
+        console.log('  命令通道（控制台看不到 stressTest 时用这个，微信任意上下文都行）:');
+        console.log('    wx.setStorageSync(\'__stressCmd\', \'down\') / \'up\' / \'status\' / \'spawn:1500\' / \'scale:0.7\'');
     }
 
     /**
@@ -305,6 +307,8 @@ export class StressTestController extends Component {
      * 这是红线 2 的边界：A 的数据必须来自"没有这个循环"的那次运行，所以别在 A 的测试里开立方体。
      */
     update(dt: number) {
+        this._pollCommands(dt);
+
         this.cubes.animate(dt);
 
         // Pressure 模式才需要逐帧采样；Load 模式（默认）颜色只跟层数走，这里零开销
@@ -524,6 +528,91 @@ export class StressTestController extends Component {
 
     /** 引擎 thermal 门面（调试逃生口，可调 setFsrMaterial / getState 等未包装的 API） */
     public getThermal(): any { return this.thermalBridge.api(); }
+
+    // ==================== 外部命令通道（微信各上下文都能驱动） ====================
+    //
+    // 背景：微信开发者工具的 Console 有时求值在别的上下文（例如开放数据域/SubContext），
+    // 那里看不到 `stressTest`，直接敲函数名会 ReferenceError。
+    // 但 **Storage 是同一小游戏实例共享的**，所以给它一条命令通道：
+    //     游戏每 0.5s 读一次 __stressCmd，执行后清空
+    //     控制台（任意上下文，只要有 wx）：
+    //         wx.setStorageSync('__stressCmd', 'down')
+    //         wx.setStorageSync('__stressCmd', 'spawn:1500')
+    // 命令语法：`名字` 或 `名字:参数`，见 execCommand()。
+
+    /** storage 里的命令键 */
+    private static readonly CMD_KEY = '__stressCmd';
+    /** 轮询累加（秒） */
+    private _cmdAccum = 0;
+
+    private _pollCommands(dt: number): void {
+        this._cmdAccum += dt;
+        if (this._cmdAccum < 0.5) return;
+        this._cmdAccum = 0;
+
+        const g: any = globalThis as any;
+        const wxApi: any = g.wx;
+        if (!wxApi || typeof wxApi.getStorageSync !== 'function') return;
+
+        let cmd = '';
+        try {
+            cmd = String(wxApi.getStorageSync(StressTestController.CMD_KEY) || '');
+        } catch (e) {
+            return;
+        }
+        if (!cmd) return;
+        try {
+            wxApi.removeStorageSync(StressTestController.CMD_KEY);
+        } catch (e) { /* 清不掉也没关系，下次会再执行一次 */ }
+
+        try {
+            this.execCommand(cmd);
+        } catch (e) {
+            console.warn('[StressTest] 命令执行失败: ' + cmd + ' / ' + String(e));
+        }
+    }
+
+    /**
+     * 执行一条命令（也可以直接在能访问 stressTest 的地方调）。
+     * 支持：
+     *   down / up / on / off / status / print / level
+     *   spawn:1500     planes:4          scale:0.7        fps:30
+     *   trigger:30     order:frameRate-first               fsr:off
+     *   fsrmin:0.7     cpu:1000          base:4000
+     */
+    public execCommand(cmd: string): any {
+        const raw = String(cmd || '').trim();
+        if (!raw) return;
+        const idx = raw.indexOf(':');
+        const name = (idx < 0 ? raw : raw.slice(0, idx)).trim();
+        const arg = idx < 0 ? '' : raw.slice(idx + 1).trim();
+        const num = Number(arg);
+
+        console.log('[StressTest] exec: ' + raw);
+
+        switch (name) {
+            case 'down': case 'thermalDown': return this.thermalDown();
+            case 'up': case 'thermalUp': return this.thermalUp();
+            case 'on': case 'thermalOn': return this.thermalOn();
+            case 'off': case 'thermalOff': return this.thermalOff();
+            case 'status': return this.getStatus();
+            case 'print': return this.printCsv(arg ? num : 10);
+            case 'level': return this.thermalLevel();
+            case 'spawn': case 'cubes': return this.setSpawnCount(num);
+            case 'planes': return this.setHeatPlaneCount(num);
+            case 'scale': return this.setScale(num);
+            case 'fps': return this.setFps(num);
+            case 'trigger': return this.setTriggerPercent(num);
+            case 'cpu': return this.setCpuWork(num);
+            case 'base': return this.setPerCubeBaseOps(num);
+            case 'order': return this.setDowngradeOrder(arg);
+            case 'fsr': return this.setFsrEnabled(arg !== 'off' && arg !== '0' && arg !== 'false');
+            case 'fsrmin': return this.setFsrMinScale(num);
+            default:
+                console.warn('[StressTest] 未知命令: ' + raw
+                    + '；可用：down/up/on/off/status/print/level, spawn:/planes:/scale:/fps:/trigger:/cpu:/base:/order:/fsr:/fsrmin:');
+        }
+    }
 
     // ==================== UI 回调 ====================
 
