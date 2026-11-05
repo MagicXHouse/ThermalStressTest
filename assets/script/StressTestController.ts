@@ -501,6 +501,12 @@ export class StressTestController extends Component {
     /** 运行时改 FSR 阈值（`shadingScale <= minScale` 才开），验证 0.85 档纯降采样是否更划算 */
     public setFsrMinScale(minScale: number): void { this.thermalBridge.setFsrMinScale(minScale); }
 
+    /**
+     * 运行时切换降档顺序（`'scale-first'` / `'frameRate-first'`，也接受面板枚举 0/1），不需要重新构建。
+     * 只影响之后的降档；已经降过的档不会回滚。
+     */
+    public setDowngradeOrder(order: string | number): void { this.thermalBridge.setDowngradeOrder(order); }
+
     /** 引擎 thermal 门面（调试逃生口，可调 setFsrMaterial / getState 等未包装的 API） */
     public getThermal(): any { return this.thermalBridge.api(); }
 
@@ -552,6 +558,8 @@ export class StressTestController extends Component {
             sampling: this.csv.sampling,
             csvRows: this.csv.rowCount,
             thermalOn: this.enableThermalControl,
+            /** 当前降档顺序（面板值；运行时 setDowngradeOrder 会同步它） */
+            downgradeOrder: this.downgradeOrder === DowngradeOrder.FrameRateFirst ? 'frameRate-first' : 'scale-first',
             drsAutoToggle: this.autoToggleDrs,
             /** 启动时是否因"温控 + DRS 同时开"而强制关掉了 DRS：为 true 说明这组数据里没有 DRS 行为 */
             drsConflict: this._drsConflictResolved,

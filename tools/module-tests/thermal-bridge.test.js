@@ -4,7 +4,7 @@ const path = require('path');
 const Module = require('module');
 const ts = require(process.env.CC_ENGINE_TYPESCRIPT || 'D:/proj/cocos/cocos4/node_modules/typescript');
 
-const calls = { enable: [], disable: 0, stepDown: 0, stepUp: 0, setThreshold: [], levelChange: 0, action: 0, fsrEnabled: [], fsrMin: [] };
+const calls = { enable: [], disable: 0, stepDown: 0, stepUp: 0, setThreshold: [], levelChange: 0, action: 0, fsrEnabled: [], fsrMin: [], dgOrder: [] };
 let fakeLevel = 0;
 let fakeState = { level: 0, frameRate: 60, shadingScale: 1.0, scaleEnabled: true, enabled: true, paused: false };
 
@@ -19,9 +19,12 @@ const thermalStub = {
     onLevelChange(cb) { calls.levelChange++; },
     onAction(cb) { calls.action++; },
     setThreshold(p) { calls.setThreshold.push(p); },
+    setDowngradeOrder(v) { calls.dgOrder.push(v); },
     setFsrMaterial() { },
     setFsrEnabled(v) { calls.fsrEnabled.push(v); },
     setFsrMinScale(v) { calls.fsrMin.push(v); },
+    // 旧引擎兜底路径用
+    _controller: { _config: { downgradeOrder: 'scale-first' } },
     // 供 setFsrEnabled 的日志读取
     _fsr: { _settings: { fsr: { enabled: false } } },
 };
@@ -129,6 +132,28 @@ check('setFsrEnabled 透传到引擎（先关后开）', calls.fsrEnabled.join('
 bridge.setFsrMinScale(0.7);
 check('setFsrMinScale 透传到引擎', calls.fsrMin[0] === 0.7, String(calls.fsrMin[0]));
 check('api() 返回引擎门面（控制器 getThermal 的逃生口）', bridge.api() === thermalStub);
+
+// 降档顺序：运行时切换应透传到引擎，并同步面板字段
+bridge.setDowngradeOrder('frameRate-first');
+check('setDowngradeOrder 透传 frameRate-first', calls.dgOrder[0] === 'frameRate-first', String(calls.dgOrder[0]));
+check('setDowngradeOrder 同步面板字段', ctrl.downgradeOrder === DowngradeOrder.FrameRateFirst, String(ctrl.downgradeOrder));
+bridge.setDowngradeOrder(0);
+check('setDowngradeOrder 接受枚举 0 → scale-first', calls.dgOrder[1] === 'scale-first', String(calls.dgOrder[1]));
+check('setDowngradeOrder 非法值按 scale-first 处理', (function () {
+    bridge.setDowngradeOrder('bogus');
+    return calls.dgOrder[2] === 'scale-first';
+})(), String(calls.dgOrder[2]));
+
+// 旧引擎兜底：没有 setDowngradeOrder 时改 controller._config
+(function () {
+    const saved = thermalStub.setDowngradeOrder;
+    delete thermalStub.setDowngradeOrder;
+    bridge.setDowngradeOrder('frameRate-first');
+    check('旧引擎兜底：改 controller._config.downgradeOrder',
+        thermalStub._controller._config.downgradeOrder === 'frameRate-first',
+        String(thermalStub._controller._config.downgradeOrder));
+    thermalStub.setDowngradeOrder = saved;
+}());
 
 bridge.off();
 check('off 调用 thermal.disable', calls.disable === 1);

@@ -211,6 +211,38 @@ export class ThermalBridge {
     }
 
     /**
+     * 运行时切换降档顺序（`scale-first` / `frameRate-first`），不需要重新构建。
+     *
+     * - 新引擎（含 `Thermal.setDowngradeOrder`）：直接调门面；
+     * - 旧引擎兜底：`_doStepDown` 每一步都读 `_config.downgradeOrder`，直接改它即可。
+     * 只影响**之后**的降档；已经降过的档不会回滚。
+     * 入参接受 `'frameRate-first'` / `'scale-first'`，也接受面板枚举 1 / 0。
+     */
+    public setDowngradeOrder (order: string | number): void {
+        const th = thermalApi();
+        if (!th) {
+            console.warn('[StressTest] thermal 模块不可用，无法切换降档顺序');
+            return;
+        }
+        const first = (order === 1 || order === 'frameRate-first' || order === 'framerate-first');
+        const normalized = first ? 'frameRate-first' : 'scale-first';
+        if (typeof th.setDowngradeOrder === 'function') {
+            th.setDowngradeOrder(normalized);
+        } else {
+            const ctrlImpl: any = th._controller;
+            if (!ctrlImpl || !ctrlImpl._config) {
+                console.warn('[StressTest] setDowngradeOrder 不可用：既没有引擎 setter，也没有 controller._config');
+                return;
+            }
+            ctrlImpl._config.downgradeOrder = normalized;
+            console.log('[StressTest] downgradeOrder = ' + normalized + '（旧引擎兜底：直接改 controller._config）');
+        }
+        // 同步面板字段，getStatus().downgradeOrder 才能反映真实值
+        this._ctrl.downgradeOrder = first ? DowngradeOrder.FrameRateFirst : DowngradeOrder.ScaleFirst;
+        console.log('[StressTest] downgradeOrder 现在 = ' + normalized + '（只影响之后的降档）');
+    }
+
+    /**
      * 诊断 FSR 链路：打印“降分辨率 + FSR 到底有没有被写进相机设置”的关键状态。
      * 当前链路：thermal -> camera.pipelineSettings.fsr -> 自定义管线自带的 FSR pass。
      * 用法：控制台执行 `stressTest.diagFsr()`。
