@@ -566,7 +566,17 @@ export class StressTestController extends Component {
         } catch (e) { /* 清不掉也没关系，下次会再执行一次 */ }
 
         try {
-            this.execCommand(cmd);
+            const result = this.execCommand(cmd);
+            // 命令的返回值对排查很有用（status/level/down 的 true|false），直接在日志里回显
+            if (result !== undefined) {
+                let text: string;
+                try {
+                    text = typeof result === 'object' ? JSON.stringify(result) : String(result);
+                } catch (e) {
+                    text = String(result);
+                }
+                console.log('[StressTest] result: ' + text);
+            }
         } catch (e) {
             console.warn('[StressTest] 命令执行失败: ' + cmd + ' / ' + String(e));
         }
