@@ -179,6 +179,10 @@ export class CsvRecorder {
         }
         const text = out.join('\n');
         const rows = out.length - 1;
+        // 跨度：用于现场核对"复制的数据覆盖了多久"，不必再去翻行
+        const firstElapsed = Number(out.length > 1 ? String(out[1]).split(',')[0] : 0) || 0;
+        const lastElapsed = Number(out.length > 1 ? String(out[out.length - 1]).split(',')[0] : 0) || 0;
+        const span = Number((lastElapsed - firstElapsed).toFixed(1));
         // 注意：这是 UTF-8 下的字符数近似（本 CSV 全 ASCII，字符数 = 字节数）
         const bytes = text.length;
         // 体积经验值：约 78 字节/行 → 30 分钟 ≈ 27KB、1 小时 ≈ 55KB。
@@ -198,12 +202,12 @@ export class CsvRecorder {
                 success: () => console.log('[StressTest] CSV 已复制到剪贴板：' + rows + ' 行 / ' + bytes + ' 字节'),
                 fail: (e: any) => console.warn('[StressTest] 复制到剪贴板失败: ' + (e && e.errMsg)),
             });
-            return { copied: true, rows, bytes, warn };
+            return { copied: true, rows, bytes, span, warn };
         }
 
         // 非微信（编辑器预览 / 单测）：退回打印，浏览器里可以手动复制
         console.log('[StressTest][csv] ' + text);
-        return { copied: false, reason: 'no-wx-clipboard', rows, bytes, warn };
+        return { copied: false, reason: 'no-wx-clipboard', rows, bytes, span, warn };
     }
 
     /**

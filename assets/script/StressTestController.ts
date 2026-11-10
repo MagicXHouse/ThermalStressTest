@@ -744,8 +744,10 @@ export class StressTestController extends Component {
     public onCopyCsvClick(): void {
         const r = this.copyCsv(0);
         let msg = '复制失败（仅微信小游戏支持）';
-        if (r && r.copied) msg = '已复制 ' + r.rows + ' 行';
-        else if (r && r.reason === 'no-data') msg = '还没有数据';
+        if (r && r.copied) {
+            // 带上时长：一眼能核对"复制到的数据覆盖了多久"，也是 H-02 的现场判据
+            msg = '已复制 ' + r.rows + ' 行（' + Math.round(r.span || 0) + 's）';
+        } else if (r && r.reason === 'no-data') msg = '还没有数据';
 
         if (this.copyTipLabel) {
             this.copyTipLabel.string = msg;
