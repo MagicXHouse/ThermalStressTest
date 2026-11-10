@@ -300,6 +300,29 @@ export class StressTestController extends Component {
         console.log('  diag : diagFsr() | diagPlane() | getStatus() | logStatus() | exportCsv() | printCsv(n)');
         console.log('  命令通道（控制台看不到 stressTest 时用这个，微信任意上下文都行）:');
         console.log('    wx.setStorageSync(\'__stressCmd\', \'down\') / \'up\' / \'status\' / \'spawn:1500\' / \'scale:0.7\'');
+
+        // 真机拿不到 performance.memory，只剩"内存告警"这个弱信号（level 5/10/15）。
+        // 长测里如果频繁告警，说明内存在涨 —— 作为 J-03 的真机旁证。
+        this._hookMemoryWarning();
+    }
+
+    /** 内存告警计数（真机 J-03 的旁证） */
+    private _memWarnings = 0;
+
+    private _hookMemoryWarning(): void {
+        const g: any = typeof globalThis !== 'undefined' ? globalThis : {};
+        const wx = g.wx;
+        if (!wx || typeof wx.onMemoryWarning !== 'function') return;
+        try {
+            wx.onMemoryWarning((res: any) => {
+                this._memWarnings++;
+                const lv = res && res.level;
+                const name = lv === 5 ? '偏低' : lv === 10 ? '低' : '危急';
+                this._log('内存告警 level=' + lv + '（' + name + '），累计 ' + this._memWarnings + ' 次');
+            });
+        } catch (e) {
+            console.warn('[StressTest] wx.onMemoryWarning 注册失败');
+        }
     }
 
     /**
@@ -705,6 +728,8 @@ export class StressTestController extends Component {
             thermalOn: this.enableThermalControl,
             /** 运行时的实际状态（thermalOff 之后为 false，与面板开关无关） */
             thermalActive: this.thermalBridge.isActive(),
+            /** 内存告警累计次数（真机 J-03 旁证；devtools 里一般是 0） */
+            memWarnings: this._memWarnings,
             /** 当前降档顺序（面板值；运行时 setDowngradeOrder 会同步它） */
             downgradeOrder: this.downgradeOrder === DowngradeOrder.FrameRateFirst ? 'frameRate-first' : 'scale-first',
             drsAutoToggle: this.autoToggleDrs,
@@ -754,6 +779,8 @@ export class StressTestController extends Component {
                 available: false,
                 hint: '当前环境没有 performance.memory（真机通常没有，请在开发者工具里测）',
                 csvRows: this.csv.rowCount,
+                // 真机唯一能拿到的内存信号：告警次数（长测里频繁告警 = 内存在涨）
+                memWarnings: this._memWarnings,
             };
         }
         const mb = (n: number) => Number((n / 1048576).toFixed(1));
