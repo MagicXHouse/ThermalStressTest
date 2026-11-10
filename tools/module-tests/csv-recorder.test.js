@@ -243,6 +243,29 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
     delete global.wx;
 }
 
+// --- T10：启动清理只能删 latest，不能把归档（export 出来的）删掉 ---
+{
+    const unlinked = [];
+    global.wx = {
+        env: { USER_DATA_PATH: '/vfs' },
+        getFileSystemManager: () => ({
+            readdir: (o) => o.success({ files: ['thermal_latest.csv', 'thermal_A_1794.csv', 'thermal_BX_1795.csv', 'other.txt'] }),
+            unlink: (o) => { unlinked.push(o.filePath); if (o.success) o.success(); },
+        }),
+    };
+    const rec = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: false, isThermalActive: () => false, _log: () => { } });
+
+    rec.cleanOld();
+    check('T10: cleanOld 只删 thermal_latest.csv', unlinked.length === 1 && /\/vfs\/thermal_latest\.csv$/.test(unlinked[0]), JSON.stringify(unlinked));
+
+    unlinked.length = 0;
+    rec.cleanAll();
+    check('T10: cleanAll 才删掉全部 thermal_*（保留非 thermal 文件）',
+        unlinked.length === 3 && !unlinked.some(p => /other\.txt$/.test(p)), JSON.stringify(unlinked));
+
+    delete global.wx;
+}
+
 global.performance = realPerf;
 const failed = results.filter(r => !r.ok);console.log('\n==== 结果: ' + (results.length - failed.length) + '/' + results.length + ' 通过 ====');
 if (failed.length) { console.log('失败项: ' + failed.map(f => f.name).join(' | ')); process.exitCode = 1; }

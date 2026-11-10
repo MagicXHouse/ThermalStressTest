@@ -346,8 +346,23 @@ export class CsvRecorder {
         });
     }
 
-    /** 开跑前清掉沙箱里上一次留下的 thermal_*.csv，避免文件越堆越多 */
+    /**
+     * 开跑前清理：**只删 `thermal_latest.csv`**（那是每 60 秒覆盖写的快照，删了无损）。
+     *
+     * 之前这里删的是所有 `thermal_*.csv`，包括你手动 `export` 出来的归档文件——
+     * 跑完 30 分钟导出、再重进一次游戏，归档就被清空了。A/B 数据最忌讳这个，已改。
+     * 需要彻底清空时用手动命令 `s('clean')`（见 {@link cleanAll}）。
+     */
     public cleanOld (): void {
+        this._cleanFiles(false);
+    }
+
+    /** 手动彻底清理：删掉所有 `thermal_*.csv`（含归档）。仅由命令 `s('clean')` 触发，不自动跑 */
+    public cleanAll (): void {
+        this._cleanFiles(true);
+    }
+
+    private _cleanFiles (all: boolean): void {
         if (!this._ctrl.writeCsv) {
             console.log('[StressTest] writeCsv is off; skip cleanOldCsv');
             return;
@@ -362,9 +377,13 @@ export class CsvRecorder {
         fs.readdir({
             dirPath: dir,
             success: (res: any) => {
-                const names: string[] = (res.files || []).filter((n: string) => /^thermal_.*[.](csv|xls)$/.test(n));
+                const matched: string[] = (res.files || []).filter((n: string) => /^thermal_.*[.](csv|xls)$/.test(n));
+                // 默认只清覆盖写的快照文件，归档（thermal_A_/B_/AX_/BX_）一律保留
+                const names = all ? matched : matched.filter((n: string) => n === CsvRecorder.LATEST_FILE);
                 if (names.length === 0) {
-                    this._ctrl._log('cleanOldCsv: no old thermal files');
+                    this._ctrl._log(all
+                        ? 'cleanOldCsv: 没有 thermal_*.csv'
+                        : 'cleanOldCsv: 无需清理（保留归档 ' + matched.length + ' 个）');
                     return;
                 }
                 let pending = names.length;
@@ -372,8 +391,9 @@ export class CsvRecorder {
                 const done = () => {
                     pending -= 1;
                     if (pending > 0) return;
-                    this._ctrl._log('cleanOldCsv: removed ' + removed + '/' + names.length);
-                    this._toast('清理旧CSV ' + removed + ' 个');
+                    this._ctrl._log('cleanOldCsv: removed ' + removed + '/' + names.length
+                        + (all ? '（全部）' : '（仅 latest，归档保留 ' + (matched.length - names.length) + ' 个）'));
+                    this._toast('清理 ' + removed + ' 个');
                 };
                 names.forEach((name: string) => {
                     fs.unlink({

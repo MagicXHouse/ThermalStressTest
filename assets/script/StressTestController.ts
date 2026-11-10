@@ -159,6 +159,17 @@ export class StressTestController extends Component {
     @property(SliderBinder)
     public gpuSlider: SliderBinder | null = null;
 
+    // ==================== 复制CSV（可选 UI） ====================
+
+    @property({ type: Node, tooltip: '（可选）编辑器里做好的"复制CSV"按钮节点；留空则运行时自动在左下角创建一个' })
+    public copyButton: Node | null = null;
+
+    @property({ type: Label, tooltip: '（可选）复制结果提示 Label；挂上后在 2 秒内显示"已复制 N 行"，之后自动清空' })
+    public copyTipLabel: Label | null = null;
+
+    @property({ tooltip: '没指定 copyButton 时，是否自动创建左下角"复制CSV"按钮' })
+    public autoCreateCopyButton: boolean = true;
+
     // ==================== 内部状态 ====================
 
     /** 场景 A 的平面负载装置（实现见 heat-plane.ts） */
@@ -241,7 +252,13 @@ export class StressTestController extends Component {
 
         this.cubes.generate(this.spawnCount);
         this.refreshUI();
-        new CopyCsvButton(this).build();
+
+        // 复制CSV 的 UI：优先用编辑器里放好的按钮，否则运行时自动创建左下角按钮
+        if (this.copyButton) {
+            this.copyButton.on(Node.EventType.TOUCH_END, this.onCopyCsvClick, this);
+        } else if (this.autoCreateCopyButton) {
+            new CopyCsvButton(this).build();
+        }
         this.applyLoad();
         if (this.planes.count > 0) this.diagPlane();   // 只在启动时打一次，拖滑块不会刷屏
 
@@ -620,6 +637,7 @@ export class StressTestController extends Component {
             case 'csvcheck': return this.csv.inspect();
             case 'export': return this.exportCsv();
             case 'copy': return this.copyCsv(num);
+            case 'clean': return this.cleanAllCsv();
             case 'level': return this.thermalLevel();
             case 'spawn': case 'cubes': return this.setSpawnCount(num);
             case 'planes': return this.setHeatPlaneCount(num);
@@ -717,8 +735,41 @@ export class StressTestController extends Component {
      */
     public copyCsv(lastN: number = 0): any { return this.csv.copyCsv(lastN); }
 
+    /**
+     * 「复制CSV」按钮的统一入口（编辑器里的 Button 点击事件、运行时创建的按钮都指向它）。
+     *
+     * 做三件事：复制到剪贴板 → 弹 toast → 若有 `copyTipLabel` 则在 Label 上显示 2 秒。
+     * 之所以统一到一个方法：面板、按钮、命令三处调用行为必须一致，否则排查时对不上。
+     */
+    public onCopyCsvClick(): void {
+        const r = this.copyCsv(0);
+        let msg = '复制失败（仅微信小游戏支持）';
+        if (r && r.copied) msg = '已复制 ' + r.rows + ' 行';
+        else if (r && r.reason === 'no-data') msg = '还没有数据';
+
+        if (this.copyTipLabel) {
+            this.copyTipLabel.string = msg;
+            this.unschedule(this._clearCopyTip);
+            this.scheduleOnce(this._clearCopyTip, 2);
+        }
+        const g: any = typeof globalThis !== 'undefined' ? globalThis : {};
+        const wx = g.wx;
+        if (wx && typeof wx.showToast === 'function') {
+            try { wx.showToast({ title: msg, icon: 'none', duration: 1500 }); } catch (e) { /* ignore */ }
+        }
+        console.log('[StressTest] ' + msg);
+    }
+
+    /** 2 秒后清空提示文字（保持引用稳定，才能被 unschedule 找到） */
+    private _clearCopyTip = (): void => {
+        if (this.copyTipLabel) this.copyTipLabel.string = '';
+    };
+
     /** 开跑前清掉沙箱里上一次留下的 thermal_*.csv */
     public cleanOldCsv() { this.csv.cleanOld(); }
+
+    /** 彻底清理沙箱里的 thermal_*.csv（含归档），只由命令 `s('clean')` 手动触发 */
+    public cleanAllCsv() { this.csv.cleanAll(); }
 
     /** 关键事件日志：同时进 console 和微信实时日志（真机不接调试器也能事后看） */
     private _log(msg: string) {

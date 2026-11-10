@@ -79,14 +79,14 @@ export class CopyCsvButton {
     }
 
     private _onClick (): void {
-        const r = this._ctrl && typeof this._ctrl.copyCsv === 'function' ? this._ctrl.copyCsv(0) : null;
-        if (r && r.copied) {
-            this._toast('已复制 ' + r.rows + ' 行');
-        } else if (r && r.reason === 'no-data') {
-            this._toast('还没有数据');
-        } else {
-            this._toast('复制失败（仅微信小游戏支持）');
+        // 统一走控制器的入口：复制 + toast + 可选 Label 提示都在那里，
+        // 这样运行时按钮和编辑器里放的按钮行为一致。
+        if (this._ctrl && typeof this._ctrl.onCopyCsvClick === 'function') {
+            this._ctrl.onCopyCsvClick();
+            return;
         }
+        const r = this._ctrl && typeof this._ctrl.copyCsv === 'function' ? this._ctrl.copyCsv(0) : null;
+        this._toast(r && r.copied ? ('已复制 ' + r.rows + ' 行') : '复制失败（仅微信小游戏支持）');
     }
 
     private _toast (msg: string): void {
