@@ -161,7 +161,7 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
             writeFile: (o) => { written.push(o.filePath); if (o.success) o.success(); },
         }),
     };
-    const recW = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: true, _log: () => { } });
+    const recW = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: true, isThermalActive: () => true, _log: () => { } });
     recW.start();
     for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recW.tick(); }
 
@@ -174,12 +174,20 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
     check('T07: 归档导出不是 latest（两者分开）', arch !== '/vfs/thermal_latest.csv');
 
     // A（温控关）应当写 thermal_A_*
-    const recA = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: false, _log: () => { } });
+    const recA = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: false, isThermalActive: () => false, _log: () => { } });
     recA.start();
     for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recA.tick(); }
     recA.exportCsv();
     const archA = written[written.length - 1];
     check('T07: 温控关时归档带 A 标识', /^\/vfs\/thermal_A_\d+\.csv$/.test(archA), archA);
+
+    // 面板关、但运行时手动 s('on') 开了温控 → 必须标成 AX，不能冒充 baseline
+    const recMix = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: false, isThermalActive: () => true, _log: () => { } });
+    recMix.start();
+    for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recMix.tick(); }
+    recMix.exportCsv();
+    const archMix = written[written.length - 1];
+    check('T07: 面板关但运行时开着 → 标 AX（不冒充 baseline）', /^\/vfs\/thermal_AX_\d+\.csv$/.test(archMix), archMix);
 
     delete global.wx;
 }

@@ -615,6 +615,8 @@ export class StressTestController extends Component {
             case 'reload': return this.reloadScene(arg);
             case 'status': return this.getStatus();
             case 'print': return this.printCsv(arg ? num : 10);
+            case 'csvcheck': return this.csv.inspect();
+            case 'export': return this.exportCsv();
             case 'level': return this.thermalLevel();
             case 'spawn': case 'cubes': return this.setSpawnCount(num);
             case 'planes': return this.setHeatPlaneCount(num);
@@ -700,8 +702,11 @@ export class StressTestController extends Component {
     /** 把已采集的 CSV 打到控制台，lastN=0 表示全部 */
     public printCsv(lastN: number = 0) { this.csv.printCsv(lastN); }
 
-    /** 写入小游戏沙箱；非微信环境只打日志 */
-    public exportCsv() { this.csv.exportCsv(); }
+    /** 运行时温控是否真的开着（与面板开关无关） */
+    public isThermalActive(): boolean { return this.thermalBridge.isActive(); }
+
+    /** 写入小游戏沙箱；非微信环境只打日志。返回文件名（失败为 null） */
+    public exportCsv(): string | null { return this.csv.exportCsv(); }
 
     /** 开跑前清掉沙箱里上一次留下的 thermal_*.csv */
     public cleanOldCsv() { this.csv.cleanOld(); }

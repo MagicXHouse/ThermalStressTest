@@ -157,27 +157,113 @@ export class CsvRecorder {
     }
 
     /**
+     * 自检：把当前 CSV 的完整性指标算出来（H-01 / H-04 用）。
+     *
+     * 检查项：
+     * - 行数与跨时长（判"有没有丢行"）
+     * - `elapsed_s` 的步长分布（正常恒为 5；出现 10 说明中间丢了一行）
+     * - `ts_ms` 是否单调递增（回退/重复说明时钟或写入有问题）
+     * - 出现过的 (load_gpu_layers, spawn_count) 组合及各自行数（判"一轮里负载有没有变"，H-04）
+     * - 出现过的 shading_scale / frame_rate（判"是不是混了多个档位"）
+     */
+    public inspect (): any {
+        const rows = this._rows;
+        const n = rows.length - 1;
+        if (n <= 0) {
+            return { rows: 0, note: '还没有数据行' };
+        }
+        const stepHist = new Map<number, number>();
+        const loads = new Map<string, number>();
+        const scales = new Map<number, number>();
+        const rates = new Map<number, number>();
+        let prevElapsed = NaN;
+        let prevTs = NaN;
+        let stepMin = Infinity;
+        let stepMax = -Infinity;
+        let tsBackwards = 0;
+        let tsDuplicates = 0;
+        let firstElapsed = NaN;
+        let lastElapsed = NaN;
+        let firstBattery = NaN;
+        let lastBattery = NaN;
+
+        for (let i = 1; i < rows.length; i++) {
+            const c = rows[i].split(',');
+            const elapsed = Number(c[0]);
+            const ts = Number(c[1]);
+            if (i === 1) { firstElapsed = elapsed; firstBattery = Number(c[7]); }
+            lastElapsed = elapsed;
+            lastBattery = Number(c[7]);
+
+            if (Number.isFinite(prevElapsed)) {
+                const step = Number((elapsed - prevElapsed).toFixed(3));
+                stepHist.set(step, (stepHist.get(step) || 0) + 1);
+                if (step < stepMin) stepMin = step;
+                if (step > stepMax) stepMax = step;
+            }
+            if (Number.isFinite(prevTs)) {
+                if (ts < prevTs) tsBackwards++;
+                else if (ts === prevTs) tsDuplicates++;
+            }
+            const loadKey = c[8] + ':' + c[9];
+            loads.set(loadKey, (loads.get(loadKey) || 0) + 1);
+            const s = Number(c[10]);
+            scales.set(s, (scales.get(s) || 0) + 1);
+            const f = Number(c[11]);
+            rates.set(f, (rates.get(f) || 0) + 1);
+
+            prevElapsed = elapsed;
+            prevTs = ts;
+        }
+
+        return {
+            rows: n,
+            spanSeconds: Number((lastElapsed - firstElapsed).toFixed(1)),
+            stepMin,
+            stepMax,
+            stepHistogram: Array.from(stepHist.entries()).map(([k, v]) => k + 's×' + v),
+            tsBackwards,
+            tsDuplicates,
+            battery: firstBattery + '→' + lastBattery,
+            loads: Array.from(loads.entries()).map(([k, v]) => k + '×' + v),
+            scales: Array.from(scales.entries()).map(([k, v]) => k + '×' + v),
+            rates: Array.from(rates.entries()).map(([k, v]) => k + '×' + v),
+        };
+    }
+
+    /**
      * 手动/归档导出：写入 `thermal_<A|B>_<时间戳>.csv`。
      * A/B 取自 enableThermalControl（温控关 = baseline A，温控开 = B），避免两轮数据混在同一堆
      * thermal_*.csv 里只能靠内容猜。
      */
-    public exportCsv (): void {
+    public exportCsv (): string | null {
         if (!this._ctrl.writeCsv) {
             console.warn('[StressTest] writeCsv is off; skip file export');
-            return;
+            return null;
         }
         if (this._rows.length <= 1) {
             console.warn('[StressTest] no CSV data');
-            return;
+            return null;
         }
         const wx = this._getWx();
         if (!wx || !wx.getFileSystemManager) {
             console.log('[StressTest] CSV sampling (non-WeChat): ' + (this._rows.length - 1) + ' rows');
-            return;
+            return null;
         }
-        const tag = this._ctrl.enableThermalControl ? 'B' : 'A';
+        // A/B 标记取自面板 enableThermalControl；但如果运行时实际状态与面板不一致（典型场景：
+        // baseline 包里手动 s('on') 开了温控），再补一个 X 后缀（AX / BX），避免把"实际被温控
+        // 干预过的数据"误标成 baseline。混一起会让 A/B 对比作废。
+        const panel = !!this._ctrl.enableThermalControl;
+        const active = !!(this._ctrl.isThermalActive && this._ctrl.isThermalActive());
+        let tag = panel ? 'B' : 'A';
+        if (active !== panel) {
+            tag += 'X';
+            console.warn('[StressTest] 导出标记为 ' + tag + '：面板 enableThermalControl=' + panel
+                + '，但运行时温控' + (active ? '已开启' : '已关闭') + '，两者不一致');
+        }
         const name = 'thermal_' + tag + '_' + Date.now() + '.csv';
         this._writeFile(name, this._rows.join('\n'), 'export');
+        return name;
     }
 
     /**
