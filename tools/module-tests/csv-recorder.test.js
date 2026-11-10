@@ -243,7 +243,7 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
     delete global.wx;
 }
 
-// --- T10：启动清理只能删 latest，不能把归档（export 出来的）删掉 ---
+// --- T10：启动清理会删掉全部 thermal_*（避免多轮重进后文件堆积），但不动别的文件 ---
 {
     const unlinked = [];
     global.wx = {
@@ -256,12 +256,8 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
     const rec = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: false, isThermalActive: () => false, _log: () => { } });
 
     rec.cleanOld();
-    check('T10: cleanOld 只删 thermal_latest.csv', unlinked.length === 1 && /\/vfs\/thermal_latest\.csv$/.test(unlinked[0]), JSON.stringify(unlinked));
-
-    unlinked.length = 0;
-    rec.cleanAll();
-    check('T10: cleanAll 才删掉全部 thermal_*（保留非 thermal 文件）',
-        unlinked.length === 3 && !unlinked.some(p => /other\.txt$/.test(p)), JSON.stringify(unlinked));
+    check('T10: cleanOld 删掉全部 3 个 thermal_*（含归档）', unlinked.length === 3, JSON.stringify(unlinked));
+    check('T10: cleanOld 不碰非 thermal 文件', !unlinked.some(p => /other\.txt$/.test(p)), JSON.stringify(unlinked));
 
     delete global.wx;
 }

@@ -637,7 +637,7 @@ export class StressTestController extends Component {
             case 'csvcheck': return this.csv.inspect();
             case 'export': return this.exportCsv();
             case 'copy': return this.copyCsv(num);
-            case 'clean': return this.cleanAllCsv();
+            case 'clean': return this.cleanOldCsv();
             case 'level': return this.thermalLevel();
             case 'spawn': case 'cubes': return this.setSpawnCount(num);
             case 'planes': return this.setHeatPlaneCount(num);
@@ -767,9 +767,6 @@ export class StressTestController extends Component {
 
     /** 开跑前清掉沙箱里上一次留下的 thermal_*.csv */
     public cleanOldCsv() { this.csv.cleanOld(); }
-
-    /** 彻底清理沙箱里的 thermal_*.csv（含归档），只由命令 `s('clean')` 手动触发 */
-    public cleanAllCsv() { this.csv.cleanAll(); }
 
     /** 关键事件日志：同时进 console 和微信实时日志（真机不接调试器也能事后看） */
     private _log(msg: string) {

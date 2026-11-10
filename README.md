@@ -165,7 +165,10 @@ CSV 写入小游戏沙箱 `wx.env.USER_DATA_PATH/`：
 
 - `thermal_latest.csv`：每 60s **覆盖写**的运行时快照（崩溃最多丢一个周期），文件名固定，不会堆一堆中间版本；
 - `thermal_A_<时间戳>.csv` / `thermal_B_<时间戳>.csv`：`exportCsv()` 手动导出的归档，A/B 由 `enableThermalControl` 决定（关=A，开=B），两轮数据可直接按文件名区分；
-- `printCsv(n)` 在控制台直接打印最近 n 行；每次启动会用 `cleanOldCsv()` 清掉上一次留下的 `thermal_*.csv`。
+- `printCsv(n)` 在控制台直接打印最近 n 行；`copyCsv()` 复制到剪贴板。
+- **每次启动都会用 `cleanOldCsv()` 清掉沙箱里全部 `thermal_*.csv`**（含上一轮 export 的归档）——
+  这是刻意的，避免多轮重进后文件一直堆积。所以取数顺序是"**先导出/复制走，再重进**"；
+  不想重启也想清一次就用 `s('clean')`。
 
 ---
 
