@@ -153,6 +153,17 @@ export class ThermalBridge {
     }
 
     /**
+     * 温控**当前是否真的处于 enabled 状态**（与面板开关 `enableThermalControl` 无关）。
+     * 面板管的是"这个包构建时要不要开"，这里问的是"运行时现在开着没有"——
+     * `thermalOff()` 之后就是 false，哪怕面板还是勾着的。
+     */
+    public isActive (): boolean {
+        const th: any = thermalApi();
+        const c: any = th && th._controller;
+        return !!(c && c._enabled);
+    }
+
+    /**
      * 运行时开关 FSR，不需要重新构建。
      *
      * 开关**不影响 shadingScale**：关闭只还原相机原来的 FSR 设置，当前档位不变。
@@ -257,6 +268,10 @@ export class ThermalBridge {
         // 发布包会压缩类名（实测 `WebPipeline` 变成 `e`），所以不能靠 pipelineClass 判断管线类型。
         // 自定义管线的标志是"它暴露了 shadingScale"，用鸭子类型判断，dev/preview/真机都可靠。
         out.pipelineSupportsShadingScale = !!(pipeline && typeof pipeline.shadingScale === 'number');
+        // 是否"真的在按运行时 scale 缩放"。管线规则：pipeline.shadingScale !== 1 时运行时覆盖优先，
+        // 会强制把相机的 enableShadingScale 置 true；否则才回落到组件上的静态配置。
+        // 因此下面那个 enableShadingScale（组件字段）经常是 false，别拿它当"有没有缩放"。
+        out.runtimeScaleActive = !!(pipeline && typeof pipeline.shadingScale === 'number' && pipeline.shadingScale !== 1);
 
         // 3D 相机：FSR 设置挂在 camera.pipelineSettings.fsr 上（由 BuiltinPipelineSettings 提供）
         const cam: any = this._ctrl._findCamera();

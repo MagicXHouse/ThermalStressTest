@@ -420,10 +420,12 @@ export class StressTestController extends Component {
      * 否则会出现"值变了但 RT 尺寸没变"。
      */
     public setScale(scale: number) {
-        // 温控开着时手动改 scale：温控的 ScaleAction 自己记账（_currentScale），感知不到这次改动，
-        // 它下一次升降档会基于旧值算档位，可能把 0.30 写回 0.85（反而升了分辨率）。所以明确告警。
-        if (this.enableThermalControl) {
-            console.warn('[StressTest] 注意：温控正在接管 shadingScale，这次手动 setScale 会被它下一次升降档覆盖'
+        // 温控**当前真的开着**时手动改 scale：ScaleAction 自己记账（_currentScale），感知不到这次改动，
+        // 它下一次升降档会基于旧值算档位，可能把 0.30 写回 0.85（反而升了分辨率）。所以要告警。
+        // 注意判"实际状态"而不是面板开关：面板 enableThermalControl=true 但已经 thermalOff() 的情况下
+        // 手动改 scale 是安全的，不该告警（之前就是这样误报的）。
+        if (this.thermalBridge.isActive()) {
+            console.warn('[StressTest] 注意：温控当前是开启状态，这次手动 setScale 会被它下一次升降档覆盖'
                 + '（ScaleAction 不知道外部改过）。要做干净的手动测试请先 thermalOff()。');
         }
         const root: any = (director as any).root;
@@ -645,6 +647,8 @@ export class StressTestController extends Component {
             /** 采样期间被丢弃的"长间隔"个数（切后台/断点）；S-04 判据用 */
             csvGaps: this.csv.gaps,
             thermalOn: this.enableThermalControl,
+            /** 运行时的实际状态（thermalOff 之后为 false，与面板开关无关） */
+            thermalActive: this.thermalBridge.isActive(),
             /** 当前降档顺序（面板值；运行时 setDowngradeOrder 会同步它） */
             downgradeOrder: this.downgradeOrder === DowngradeOrder.FrameRateFirst ? 'frameRate-first' : 'scale-first',
             drsAutoToggle: this.autoToggleDrs,
