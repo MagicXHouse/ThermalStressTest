@@ -127,6 +127,31 @@ export class ThermalBridge {
         console.log('[StressTest] thermal OFF; frame rate and scale restored');
     }
 
+    /**
+     * 暂停采样与判定（加载期用）。暂停期间不会产生任何升降档动作；
+     * `resume()` 会重新预热，避免把加载期的卡顿当成负载。
+     */
+    public pause (): void {
+        const th = thermalApi();
+        if (!th || typeof th.pause !== 'function') {
+            console.warn('[StressTest] thermal.pause 不可用');
+            return;
+        }
+        th.pause();
+        console.log('[StressTest] thermal PAUSED（暂停采样与判定，resume 后重新预热）');
+    }
+
+    /** 恢复采样与判定；会重新走一遍预热窗口 */
+    public resume (): void {
+        const th = thermalApi();
+        if (!th || typeof th.resume !== 'function') {
+            console.warn('[StressTest] thermal.resume 不可用');
+            return;
+        }
+        th.resume();
+        console.log('[StressTest] thermal RESUMED（重新预热，预热期内不判定）');
+    }
+
     /** 手动降一档（走 ScaleAction 优先） */
     public down (): boolean {
         const th = thermalApi();

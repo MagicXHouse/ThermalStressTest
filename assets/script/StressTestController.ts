@@ -474,6 +474,12 @@ export class StressTestController extends Component {
     /** 关闭温控，帧率/分辨率还原 */
     public thermalOff() { this.thermalBridge.off(); }
 
+    /** 暂停采样与判定（加载期用）；resume 后会重新预热 */
+    public thermalPause(): void { this.thermalBridge.pause(); }
+
+    /** 恢复采样与判定（重新预热） */
+    public thermalResume(): void { this.thermalBridge.resume(); }
+
     /** 手动降一档（走 ScaleAction 优先） */
     public thermalDown(): boolean { return this.thermalBridge.down(); }
 
@@ -581,6 +587,8 @@ export class StressTestController extends Component {
             case 'up': case 'thermalUp': return this.thermalUp();
             case 'on': case 'thermalOn': return this.thermalOn();
             case 'off': case 'thermalOff': return this.thermalOff();
+            case 'pause': return this.thermalPause();
+            case 'resume': return this.thermalResume();
             case 'status': return this.getStatus();
             case 'print': return this.printCsv(arg ? num : 10);
             case 'level': return this.thermalLevel();
