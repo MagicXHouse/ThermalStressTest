@@ -635,6 +635,7 @@ export class StressTestController extends Component {
             case 'status': return this.getStatus();
             case 'print': return this.printCsv(arg ? num : 10);
             case 'csvcheck': return this.csv.inspect();
+            case 'mem': return this.memSnapshot();
             case 'export': return this.exportCsv();
             case 'copy': return this.copyCsv(num);
             case 'clean': return this.cleanOldCsv();
@@ -737,6 +738,50 @@ export class StressTestController extends Component {
      * @param lastN 只要最近 N 行；0 = 全部
      */
     public copyCsv(lastN: number = 0): any { return this.csv.copyCsv(lastN); }
+
+    /**
+     * 内存快照（J-03 用）。命令通道 `s('mem')`。
+     *
+     * 数据来自 `performance.memory`（Chromium 系才提供）：开发者工具的模拟器里有，
+     * 真机微信基本没有 —— 所以 J-03 只能在开发者工具里做。返回值里带上 csvRows，
+     * 方便区分"堆涨了"和"数据行涨了"（CSV 每 5 秒一行，30 分钟约 +29KB，属预期）。
+     */
+    public memSnapshot(): any {
+        const perf: any = typeof performance !== 'undefined' ? performance : null;
+        const m: any = perf && perf.memory;
+        if (!m || typeof m.usedJSHeapSize !== 'number') {
+            return {
+                available: false,
+                hint: '当前环境没有 performance.memory（真机通常没有，请在开发者工具里测）',
+                csvRows: this.csv.rowCount,
+            };
+        }
+        const mb = (n: number) => Number((n / 1048576).toFixed(1));
+        const used = mb(m.usedJSHeapSize);
+        const t = Number((performance.now() / 1000).toFixed(0));
+        this._memSamples.push({ t, used });
+        if (this._memSamples.length > 48) this._memSamples.shift();
+
+        const first = this._memSamples[0];
+        const last = this._memSamples[this._memSamples.length - 1];
+        const all = this._memSamples.map(s => s.used);
+        return {
+            available: true,
+            usedMB: used,
+            totalMB: mb(m.totalJSHeapSize),
+            limitMB: mb(m.jsHeapSizeLimit),
+            csvRows: this.csv.rowCount,
+            // 首次采样到现在的增量：正数就是"涨了"。配合 history 看是否单调
+            deltaMB: this._memSamples.length > 1 ? Number((last.used - first.used).toFixed(1)) : 0,
+            peakMB: Math.max(...all),
+            // 紧凑历史：秒数:MB，例如 ["300:52.1","600:54.3"]
+            history: this._memSamples.map(s => s.t + ':' + s.used),
+        };
+    }
+
+    /** J-03 内存采样历史（最多 48 条，够 4 小时每 5 分钟一次） */
+    private _memSamples: { t: number; used: number }[] = [];
+
 
     /**
      * 「复制CSV」按钮的统一入口（编辑器里的 Button 点击事件、运行时创建的按钮都指向它）。
