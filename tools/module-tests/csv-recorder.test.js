@@ -219,6 +219,30 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
     check('T08: 切后台后 ft_avg 不被拉高', avgFt < 100, 'ft_avg=' + avgFt);
 }
 
+// --- T09：复制到剪贴板（copyCsv）---
+{
+    let clip = null;
+    global.wx = {
+        env: { USER_DATA_PATH: '/vfs' },
+        setClipboardData: (o) => { clip = o.data; if (o.success) o.success(); },
+    };
+    const rec = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: false, isThermalActive: () => false, _log: () => { } });
+    rec.start();
+    for (let t = 0; t < 16000; t += 16) { fakeNow += 16; rec.tick(); }
+
+    const r1 = rec.copyCsv();
+    const lines1 = clip.split('\n');
+    check('T09: 复制全部带上表头', lines1[0].startsWith('elapsed_s,ts_ms,fps'), lines1[0].slice(0, 20));
+    check('T09: 复制行数与数据行一致', lines1.length - 1 === r1.rows && r1.rows >= 3, 'rows=' + r1.rows);
+    check('T09: 返回摘要而不是全文', r1.copied === true && typeof r1.bytes === 'number', JSON.stringify(r1));
+
+    const r2 = rec.copyCsv(2);
+    const lines2 = clip.split('\n');
+    check('T09: 复制最近 2 行（仍带表头）', lines2.length === 3 && r2.rows === 2, 'lines=' + lines2.length);
+
+    delete global.wx;
+}
+
 global.performance = realPerf;
 const failed = results.filter(r => !r.ok);console.log('\n==== 结果: ' + (results.length - failed.length) + '/' + results.length + ' 通过 ====');
 if (failed.length) { console.log('失败项: ' + failed.map(f => f.name).join(' | ')); process.exitCode = 1; }

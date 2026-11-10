@@ -157,6 +157,46 @@ export class CsvRecorder {
     }
 
     /**
+     * 把已采集的 CSV 复制到系统剪贴板（真机/测试同事最省事的取数方式）。
+     *
+     * 为什么返回摘要而不是文本本身：命令通道会把返回值 `JSON.stringify` 回显，
+     * 若返回整个 CSV（几十 KB）会在控制台刷两遍。文本已经写进剪贴板了。
+     *
+     * @param lastN 只要最近 N 行；0 = 全部。数据量建议：≤200 行走剪贴板，
+     *              更长用 {@link exportCsv}（文件更适合 30 分钟长测）。
+     */
+    public copyCsv (lastN: number = 0): any {
+        const total = this._rows.length;
+        if (total <= 1) {
+            console.warn('[StressTest] 还没有 CSV 数据');
+            return { copied: false, reason: 'no-data' };
+        }
+        let out: string[];
+        if (lastN > 0 && lastN < total - 1) {
+            out = [this._rows[0]].concat(this._rows.slice(total - lastN));
+        } else {
+            out = this._rows;
+        }
+        const text = out.join('\n');
+        const rows = out.length - 1;
+        const bytes = text.length;
+        const wx = this._getWx();
+
+        if (wx && typeof wx.setClipboardData === 'function') {
+            wx.setClipboardData({
+                data: text,
+                success: () => console.log('[StressTest] CSV 已复制到剪贴板：' + rows + ' 行 / ' + bytes + ' 字节'),
+                fail: (e: any) => console.warn('[StressTest] 复制到剪贴板失败: ' + (e && e.errMsg)),
+            });
+            return { copied: true, rows, bytes };
+        }
+
+        // 非微信（编辑器预览 / 单测）：退回打印，浏览器里可以手动复制
+        console.log('[StressTest][csv] ' + text);
+        return { copied: false, reason: 'no-wx-clipboard', rows, bytes };
+    }
+
+    /**
      * 自检：把当前 CSV 的完整性指标算出来（H-01 / H-04 用）。
      *
      * 检查项：

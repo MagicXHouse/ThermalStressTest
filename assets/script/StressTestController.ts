@@ -8,6 +8,7 @@ import { CsvRecorder } from './csv-recorder';
 import { HeatPlaneRig, TintMode } from './heat-plane';
 import { ThermalBridge, DowngradeOrder } from './thermal-bridge';
 import { DrsProbe } from './drs-probe';
+import { CopyCsvButton } from './copy-csv-button';
 import { CpuCubes } from './cpu-cubes';
 const { ccclass, property } = _decorator;
 
@@ -240,6 +241,7 @@ export class StressTestController extends Component {
 
         this.cubes.generate(this.spawnCount);
         this.refreshUI();
+        new CopyCsvButton(this).build();
         this.applyLoad();
         if (this.planes.count > 0) this.diagPlane();   // 只在启动时打一次，拖滑块不会刷屏
 
@@ -617,6 +619,7 @@ export class StressTestController extends Component {
             case 'print': return this.printCsv(arg ? num : 10);
             case 'csvcheck': return this.csv.inspect();
             case 'export': return this.exportCsv();
+            case 'copy': return this.copyCsv(num);
             case 'level': return this.thermalLevel();
             case 'spawn': case 'cubes': return this.setSpawnCount(num);
             case 'planes': return this.setHeatPlaneCount(num);
@@ -707,6 +710,12 @@ export class StressTestController extends Component {
 
     /** 写入小游戏沙箱；非微信环境只打日志。返回文件名（失败为 null） */
     public exportCsv(): string | null { return this.csv.exportCsv(); }
+
+    /**
+     * 把 CSV 复制到剪贴板，返回摘要 `{copied, rows, bytes}`。
+     * @param lastN 只要最近 N 行；0 = 全部
+     */
+    public copyCsv(lastN: number = 0): any { return this.csv.copyCsv(lastN); }
 
     /** 开跑前清掉沙箱里上一次留下的 thermal_*.csv */
     public cleanOldCsv() { this.csv.cleanOld(); }
