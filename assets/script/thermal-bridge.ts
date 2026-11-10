@@ -254,6 +254,9 @@ export class ThermalBridge {
         const pipeline: any = root ? root.pipeline : null;
         out.pipelineClass = pipeline ? (pipeline.constructor ? pipeline.constructor.name : 'unknown') : 'null';
         out.pipelineShadingScale = pipeline ? Number((pipeline.shadingScale || 1).toFixed(3)) : 'n/a';
+        // 发布包会压缩类名（实测 `WebPipeline` 变成 `e`），所以不能靠 pipelineClass 判断管线类型。
+        // 自定义管线的标志是"它暴露了 shadingScale"，用鸭子类型判断，dev/preview/真机都可靠。
+        out.pipelineSupportsShadingScale = !!(pipeline && typeof pipeline.shadingScale === 'number');
 
         // 3D 相机：FSR 设置挂在 camera.pipelineSettings.fsr 上（由 BuiltinPipelineSettings 提供）
         const cam: any = this._ctrl._findCamera();

@@ -592,9 +592,13 @@ export class StressTestController extends Component {
             case 'order': return this.setDowngradeOrder(arg);
             case 'fsr': return this.setFsrEnabled(arg !== 'off' && arg !== '0' && arg !== 'false');
             case 'fsrmin': return this.setFsrMinScale(num);
+            case 'diag': return this.diagFsr();
+            case 'diagplane': return this.diagPlane();
+            case 'log': return this.logStatus();
             default:
                 console.warn('[StressTest] 未知命令: ' + raw
-                    + '；可用：down/up/on/off/status/print/level, spawn:/planes:/scale:/fps:/trigger:/cpu:/base:/order:/fsr:/fsrmin:');
+                    + '；可用：down/up/on/off/status/print/level/diag/diagplane/log, '
+                    + 'spawn:/planes:/scale:/fps:/trigger:/cpu:/base:/order:/fsr:/fsrmin:');
         }
     }
 

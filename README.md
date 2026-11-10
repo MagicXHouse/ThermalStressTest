@@ -120,8 +120,10 @@ s('spawn:1500')    // 设负载
 s('order:frameRate-first')
 ```
 
-支持的写法：`down / up / on / off / status / print[:N] / level` 以及
+支持的写法：`down / up / on / off / status / print[:N] / level / diag / diagplane / log` 以及
 `spawn:N / planes:N / scale:X / fps:N / trigger:N / cpu:N / base:N / order:xxx / fsr:on|off / fsrmin:X`。
+
+> `diag` 会执行 `diagFsr()` 并把结果打到 `[StressTest] result:` 那行（F-02 验证 FSR 必备）。
 
 限制：**0.5 秒轮询**、**一次只能排一条**（覆盖写），所以每敲一条要等日志出现
 `[StressTest] exec: xxx`（以及 `result:`）再敲下一条。
