@@ -152,7 +152,7 @@ check('stop 后 lastFps 仍可读（不清零）', rec.lastFps > 0, 'lastFps=' +
 rec.start();
 check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' + rec.rowCount);
 
-// --- 10) T07：定时快照用固定名覆盖写，归档导出带 A/B 标识 ---
+// --- 10) T07：定时快照用固定名覆盖写，归档导出的 A/B 标签按"温控有没有真正介入" ---
 {
     const written = [];
     global.wx = {
@@ -161,33 +161,38 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
             writeFile: (o) => { written.push(o.filePath); if (o.success) o.success(); },
         }),
     };
-    const recW = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: true, isThermalActive: () => true, _log: () => { } });
+    const mk = (opts) => {
+        const r = new CsvRecorder(Object.assign({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, _log: () => { } }, opts));
+        r.start();
+        for (let t = 0; t < 5200; t += 16) { fakeNow += 16; r.tick(); }
+        r.exportCsv();
+        return written[written.length - 1];
+    };
+
+    // B 组：面板开 + 真的介入过
+    const recW = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: true, hasThermalEverBeenActive: () => true, _log: () => { } });
     recW.start();
     for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recW.tick(); }
-
     recW.autoExport();
     check('T07: autoExport 写固定名 thermal_latest.csv', written[written.length - 1] === '/vfs/thermal_latest.csv', written[written.length - 1]);
 
     recW.exportCsv();
     const arch = written[written.length - 1];
-    check('T07: 归档导出带 B 标识且带时间戳', /^\/vfs\/thermal_B_\d+\.csv$/.test(arch), arch);
+    check('T07: 面板开且真的介入过 → thermal_B_<ts>', /^\/vfs\/thermal_B_\d+\.csv$/.test(arch), arch);
     check('T07: 归档导出不是 latest（两者分开）', arch !== '/vfs/thermal_latest.csv');
 
-    // A（温控关）应当写 thermal_A_*
-    const recA = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: false, isThermalActive: () => false, _log: () => { } });
-    recA.start();
-    for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recA.tick(); }
-    recA.exportCsv();
-    const archA = written[written.length - 1];
-    check('T07: 温控关时归档带 A 标识', /^\/vfs\/thermal_A_\d+\.csv$/.test(archA), archA);
+    // A 组：面板关，温控从未生效
+    const archA = mk({ enableThermalControl: false, hasThermalEverBeenActive: () => false });
+    check('T07: 面板关且从未生效 → thermal_A_<ts>', /^\/vfs\/thermal_A_\d+\.csv$/.test(archA), archA);
 
-    // 面板关、但运行时手动 s('on') 开了温控 → 必须标成 AX，不能冒充 baseline
-    const recMix = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 }, enableThermalControl: false, isThermalActive: () => true, _log: () => { } });
-    recMix.start();
-    for (let t = 0; t < 5200; t += 16) { fakeNow += 16; recMix.tick(); }
-    recMix.exportCsv();
-    const archMix = written[written.length - 1];
-    check('T07: 面板关但运行时开着 → 标 AX（不冒充 baseline）', /^\/vfs\/thermal_AX_\d+\.csv$/.test(archMix), archMix);
+    // ★ 真机踩过的坑：面板勾着、但构建时把 thermal feature 裁了 → 运行时从未生效。
+    // 这其实就是 baseline，必须标 A，不能因为面板勾着就标成 B。
+    const archCropped = mk({ enableThermalControl: true, hasThermalEverBeenActive: () => false });
+    check('T07: 面板开但模块被裁 → 标 A（这才是真实语义）', /^\/vfs\/thermal_A_\d+\.csv$/.test(archCropped), archCropped);
+
+    // 面板关、但运行时手动 s('on') 真的生效过 → 必须标 B，不能冒充 baseline
+    const archMix = mk({ enableThermalControl: false, hasThermalEverBeenActive: () => true });
+    check('T07: 面板关但真的介入过 → 标 B（不冒充 baseline）', /^\/vfs\/thermal_B_\d+\.csv$/.test(archMix), archMix);
 
     delete global.wx;
 }

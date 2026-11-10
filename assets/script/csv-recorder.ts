@@ -304,16 +304,15 @@ export class CsvRecorder {
             console.log('[StressTest] CSV sampling (non-WeChat): ' + (this._rows.length - 1) + ' rows');
             return null;
         }
-        // A/B 标记取自面板 enableThermalControl；但如果运行时实际状态与面板不一致（典型场景：
-        // baseline 包里手动 s('on') 开了温控），再补一个 X 后缀（AX / BX），避免把"实际被温控
-        // 干预过的数据"误标成 baseline。混一起会让 A/B 对比作废。
+        // A/B 标记按"本轮温控有没有**真正**介入过"，不看面板开关。
+        // 反例：A 包面板勾着、但构建时把 thermal feature 裁掉了 —— 它其实是 baseline，
+        // 按面板会误标成 B。按"真正介入过"才是数据的真实语义。
         const panel = !!this._ctrl.enableThermalControl;
-        const active = !!(this._ctrl.isThermalActive && this._ctrl.isThermalActive());
-        let tag = panel ? 'B' : 'A';
-        if (active !== panel) {
-            tag += 'X';
+        const everActive = !!(this._ctrl.hasThermalEverBeenActive && this._ctrl.hasThermalEverBeenActive());
+        const tag = everActive ? 'B' : 'A';
+        if (everActive !== panel) {
             console.warn('[StressTest] 导出标记为 ' + tag + '：面板 enableThermalControl=' + panel
-                + '，但运行时温控' + (active ? '已开启' : '已关闭') + '，两者不一致');
+                + '，但本轮温控' + (everActive ? '确实介入过' : '从未生效') + ' → 以运行结果为准');
         }
         const name = 'thermal_' + tag + '_' + Date.now() + '.csv';
         this._writeFile(name, this._rows.join('\n'), 'export');

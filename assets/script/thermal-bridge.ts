@@ -32,6 +32,12 @@ export enum DowngradeOrder {
  * 所以本类只读 ctrl，不持有任何可调参数。
  */
 export class ThermalBridge {
+    /**
+     * 本轮是否**真正** enable 成功过（模块存在且 enable 调通）。
+     * 用途：A/B 导出文件名要按"温控有没有介入"打标签，而不是面板开关——
+     * 典型反例：A 包面板勾着但 thermal feature 被裁掉，运行时不生效，它其实是 baseline。
+     */
+    private _everActive = false;
     private _ctrl: any;
     /** FSR 升采样材质是否就绪 */
     private _fsrReady = false;
@@ -112,6 +118,7 @@ export class ThermalBridge {
                     + (e.avgMs && e.targetMs ? (' avg=' + e.avgMs.toFixed(2) + 'ms target=' + e.targetMs.toFixed(2) + 'ms') : ''));
             });
         }
+        this._everActive = true;
         const state = th.getState();
         console.log('[StressTest] thermal ON: level=' + state.level
             + ', scale=' + Number(state.shadingScale).toFixed(2)
@@ -186,6 +193,11 @@ export class ThermalBridge {
         const th: any = thermalApi();
         const c: any = th && th._controller;
         return !!(c && c._enabled);
+    }
+
+    /** 本轮是否真的 enable 成功过（用于 A/B 导出标签） */
+    public hasEverBeenActive (): boolean {
+        return this._everActive;
     }
 
     /**

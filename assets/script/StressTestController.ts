@@ -726,6 +726,9 @@ export class StressTestController extends Component {
     /** 运行时温控是否真的开着（与面板开关无关） */
     public isThermalActive(): boolean { return this.thermalBridge.isActive(); }
 
+    /** 本轮是否真的 enable 成功过（用于 A/B 导出标签：true = B 组） */
+    public hasThermalEverBeenActive(): boolean { return this.thermalBridge.hasEverBeenActive(); }
+
     /** 写入小游戏沙箱；非微信环境只打日志。返回文件名（失败为 null） */
     public exportCsv(): string | null { return this.csv.exportCsv(); }
 
