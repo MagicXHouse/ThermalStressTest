@@ -179,7 +179,17 @@ export class CsvRecorder {
         }
         const text = out.join('\n');
         const rows = out.length - 1;
+        // 注意：这是 UTF-8 下的字符数近似（本 CSV 全 ASCII，字符数 = 字节数）
         const bytes = text.length;
+        // 体积经验值：约 78 字节/行 → 30 分钟 ≈ 27KB、1 小时 ≈ 55KB。
+        // 没有官方文档给出 wx.setClipboardData 的硬上限，这里按"明显过大就别指望剪贴板"给个软阈值：
+        // 超过就仍然复制（不改用户意图），但回一句 warn 引导改用 export / copy:N。
+        const LARGE_BYTES = 256 * 1024;
+        const warn = bytes > LARGE_BYTES ? 'large' : undefined;
+        if (warn) {
+            console.warn('[StressTest] CSV 体积偏大（' + Math.round(bytes / 1024) + 'KB），剪贴板可能失败；'
+                + '建议改用 s(\'export\') 导出文件，或 s(\'copy:200\') 只复制最近 200 行');
+        }
         const wx = this._getWx();
 
         if (wx && typeof wx.setClipboardData === 'function') {
@@ -188,12 +198,12 @@ export class CsvRecorder {
                 success: () => console.log('[StressTest] CSV 已复制到剪贴板：' + rows + ' 行 / ' + bytes + ' 字节'),
                 fail: (e: any) => console.warn('[StressTest] 复制到剪贴板失败: ' + (e && e.errMsg)),
             });
-            return { copied: true, rows, bytes };
+            return { copied: true, rows, bytes, warn };
         }
 
         // 非微信（编辑器预览 / 单测）：退回打印，浏览器里可以手动复制
         console.log('[StressTest][csv] ' + text);
-        return { copied: false, reason: 'no-wx-clipboard', rows, bytes };
+        return { copied: false, reason: 'no-wx-clipboard', rows, bytes, warn };
     }
 
     /**
