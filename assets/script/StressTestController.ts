@@ -774,14 +774,21 @@ export class StressTestController extends Component {
     public memSnapshot(): any {
         const perf: any = typeof performance !== 'undefined' ? performance : null;
         const m: any = perf && perf.memory;
+        // 结构性快照：不依赖任何 API，任何环境都能拿。
+        // 场景节点数只要不随时间上涨，就说明"没有越建越多的对象"（最常见的泄漏形态）。
+        const structural = {
+            sceneNodes: this._countSceneNodes(),
+            cubes: this.cubes.count,
+            planes: this.planes.count,
+            csvRows: this.csv.rowCount,
+            memWarnings: this._memWarnings,
+        };
         if (!m || typeof m.usedJSHeapSize !== 'number') {
-            return {
+            return Object.assign({
                 available: false,
-                hint: '当前环境没有 performance.memory（真机通常没有，请在开发者工具里测）',
-                csvRows: this.csv.rowCount,
-                // 真机唯一能拿到的内存信号：告警次数（长测里频繁告警 = 内存在涨）
-                memWarnings: this._memWarnings,
-            };
+                hint: '微信小游戏的逻辑跑在 Worker 里，没有 performance.memory；'
+                    + '精确堆数据请看开发者工具 Memory 面板的堆快照。以下是结构性指标：',
+            }, structural);
         }
         const mb = (n: number) => Number((n / 1048576).toFixed(1));
         const used = mb(m.usedJSHeapSize);
@@ -792,18 +799,35 @@ export class StressTestController extends Component {
         const first = this._memSamples[0];
         const last = this._memSamples[this._memSamples.length - 1];
         const all = this._memSamples.map(s => s.used);
-        return {
+        return Object.assign({
             available: true,
             usedMB: used,
             totalMB: mb(m.totalJSHeapSize),
             limitMB: mb(m.jsHeapSizeLimit),
-            csvRows: this.csv.rowCount,
             // 首次采样到现在的增量：正数就是"涨了"。配合 history 看是否单调
             deltaMB: this._memSamples.length > 1 ? Number((last.used - first.used).toFixed(1)) : 0,
             peakMB: Math.max(...all),
             // 紧凑历史：秒数:MB，例如 ["300:52.1","600:54.3"]
             history: this._memSamples.map(s => s.t + ':' + s.used),
-        };
+        }, structural);
+    }
+
+    /** 统计场景里的节点总数（只在 s('mem') 被调用时遍历，不进逐帧路径） */
+    private _countSceneNodes(): number {
+        const scene: any = director.getScene();
+        if (!scene) return 0;
+        let n = 1;
+        const stack: any[] = [scene];
+        while (stack.length) {
+            const cur = stack.pop();
+            const children = cur && cur.children;
+            if (!children) continue;
+            for (let i = 0; i < children.length; i++) {
+                n++;
+                stack.push(children[i]);
+            }
+        }
+        return n;
     }
 
     /** J-03 内存采样历史（最多 48 条，够 4 小时每 5 分钟一次） */
