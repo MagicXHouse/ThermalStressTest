@@ -480,6 +480,29 @@ export class StressTestController extends Component {
     /** 恢复采样与判定（重新预热） */
     public thermalResume(): void { this.thermalBridge.resume(); }
 
+    /**
+     * 重载当前场景（或指定场景），用来验证"换场景后 FSR 缓存失效"（G-05）。
+     *
+     * 工程只有一个场景，所以用"重载同一个场景"来模拟换场景：所有节点会被销毁重建、
+     * 相机是一个**新实例**——正是 `ThermalFsr._isCacheValid()` 要处理的"旧相机已销毁"路径。
+     * 用 `scheduleOnce` 推迟一帧，避免在 update 回调里直接 loadScene。
+     */
+    public reloadScene(name?: string): void {
+        const cur = director.getScene();
+        const target = (name && name.length > 0) ? name : (cur ? cur.name : '');
+        if (!target) {
+            console.warn('[StressTest] reloadScene: 拿不到场景名');
+            return;
+        }
+        console.log('[StressTest] reload scene -> ' + target + '（0.1s 后执行）');
+        this.scheduleOnce(() => {
+            director.loadScene(target, (err: Error | null) => {
+                if (err) console.error('[StressTest] loadScene 失败: ' + err);
+                else console.log('[StressTest] loadScene 完成: ' + target);
+            });
+        }, 0.1);
+    }
+
     /** 手动降一档（走 ScaleAction 优先） */
     public thermalDown(): boolean { return this.thermalBridge.down(); }
 
@@ -589,6 +612,7 @@ export class StressTestController extends Component {
             case 'off': case 'thermalOff': return this.thermalOff();
             case 'pause': return this.thermalPause();
             case 'resume': return this.thermalResume();
+            case 'reload': return this.reloadScene(arg);
             case 'status': return this.getStatus();
             case 'print': return this.printCsv(arg ? num : 10);
             case 'level': return this.thermalLevel();
