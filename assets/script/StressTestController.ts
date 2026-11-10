@@ -309,20 +309,35 @@ export class StressTestController extends Component {
     /** 内存告警计数（真机 J-03 的旁证） */
     private _memWarnings = 0;
 
+    /**
+     * \`wx.onMemoryWarning\` **没有对应的 off**，注册多次就会累积多个闭包，
+     * 每个闭包都会把当时的控制器（连同场景节点）一直引用住 —— 换场景/重载时就是泄漏。
+     * 所以用静态标记保证整个 App 生命周期只注册一次，回调里再去取"当前"控制器。
+     */
+    private static _memWarnHooked = false;
+
     private _hookMemoryWarning(): void {
         const g: any = typeof globalThis !== 'undefined' ? globalThis : {};
         const wx = g.wx;
         if (!wx || typeof wx.onMemoryWarning !== 'function') return;
+        if (StressTestController._memWarnHooked) return;
+        StressTestController._memWarnHooked = true;
         try {
             wx.onMemoryWarning((res: any) => {
-                this._memWarnings++;
-                const lv = res && res.level;
-                const name = lv === 5 ? '偏低' : lv === 10 ? '低' : '危急';
-                this._log('内存告警 level=' + lv + '（' + name + '），累计 ' + this._memWarnings + ' 次');
+                const cur: any = g.stressTest;
+                if (cur && typeof cur._onMemoryWarning === 'function') cur._onMemoryWarning(res);
             });
         } catch (e) {
+            StressTestController._memWarnHooked = false;
             console.warn('[StressTest] wx.onMemoryWarning 注册失败');
         }
+    }
+
+    private _onMemoryWarning(res: any): void {
+        this._memWarnings++;
+        const lv = res && res.level;
+        const name = lv === 5 ? '偏低' : lv === 10 ? '低' : '危急';
+        this._log('内存告警 level=' + lv + '（' + name + '），累计 ' + this._memWarnings + ' 次');
     }
 
     /**
