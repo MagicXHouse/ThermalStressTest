@@ -177,22 +177,22 @@ export class DevDashboard {
 
     private _refresh (): void {
         if (!this._available) {
-            this._rows[0] && this._paint(0, '分辨率温控: 关', false);
-            this._rows[1] && this._paint(1, '帧率温控: 关', false);
-            this._rows[2] && this._paint(2, '分辨率档位: —', false);
-            this._rows[3] && this._paint(3, '帧率档位: —', false);
+            this._paint(0, '分辨率温控: 关', 'off');
+            this._paint(1, '帧率温控: 关', 'off');
+            this._paint(2, '分辨率档位: —', 'off');
+            this._paint(3, '帧率档位: —', 'off');
             if (this._info) this._info.string = '本包没有温控模块（已裁剪）';
             return;
         }
         const bridge = this._ctrl.thermalBridge;
         const scope = bridge.leverScope();
-        this._paint(0, '分辨率温控: ' + (scope === 'frameRate' ? '关' : '开'), scope !== 'frameRate');
-        this._paint(1, '帧率温控: ' + (scope === 'scale' ? '关' : '开'), scope !== 'scale');
+        this._paint(0, '分辨率温控: ' + (scope === 'frameRate' ? '关' : '开'), scope === 'frameRate' ? 'off' : 'on');
+        this._paint(1, '帧率温控: ' + (scope === 'scale' ? '关' : '开'), scope === 'scale' ? 'off' : 'on');
 
         const tiers = typeof bridge.tiers === 'function' ? bridge.tiers() : { scale: [], frameRate: [] };
         const fmt = (arr: number[]) => (arr && arr.length ? arr.map((v: number) => String(v).replace(/^0\./, '0.')).join('/') : '默认');
-        this._paint(2, '分辨率档位: ' + fmt(tiers.scale), true);
-        this._paint(3, '帧率档位: ' + fmt(tiers.frameRate), true);
+        this._paint(2, '分辨率档位: ' + fmt(tiers.scale), 'neutral');
+        this._paint(3, '帧率档位: ' + fmt(tiers.frameRate), 'neutral');
 
         if (this._info) {
             const st = this._ctrl.getStatus ? this._ctrl.getStatus() : null;
@@ -205,7 +205,8 @@ export class DevDashboard {
         }
     }
 
-    private _paint (idx: number, text: string, on: boolean): void {
+    /** kind: 'on' 绿（开关打开）/ 'off' 灰 / 'neutral' 蓝（档位这类非开关的行） */
+    private _paint (idx: number, text: string, kind: 'on' | 'off' | 'neutral'): void {
         const row = this._rows[idx];
         if (!row) return;
         row.label.string = text;
@@ -213,7 +214,9 @@ export class DevDashboard {
         if (g) {
             const t = row.node.getComponent(UITransform)!;
             g.clear();
-            g.fillColor = on ? new Color(28, 140, 82, 215) : new Color(60, 60, 60, 195);
+            g.fillColor = kind === 'on' ? new Color(28, 140, 82, 215)
+                : kind === 'neutral' ? new Color(48, 92, 158, 215)
+                    : new Color(60, 60, 60, 195);
             g.roundRect(0, -t.contentSize.height, t.contentSize.width, t.contentSize.height, 10);
             g.fill();
         }
