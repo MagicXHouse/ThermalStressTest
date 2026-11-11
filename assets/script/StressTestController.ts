@@ -718,6 +718,8 @@ export class StressTestController extends Component {
             case 'cpu': return this.setCpuWork(num);
             case 'base': return this.setPerCubeBaseOps(num);
             case 'order': return this.setDowngradeOrder(arg);
+            case 'tiers': return this.applyTiers(arg, true);
+            case 'ftiers': return this.applyTiers(arg, false);
             case 'lever':
                 this.thermalBridge.setLeverScope(arg || 'both');
                 this._leverHint();
@@ -829,6 +831,30 @@ export class StressTestController extends Component {
         const n = Number(arg);
         if (arg && Number.isFinite(n) && n > 0) return this.csv.copyCsv(n);
         return this.csv.copyCsv(0);
+    }
+
+    /**
+     * 运行时替换档位梯度（命令 tiers:0.85,0.7 / ftiers:60,40,30）。
+     * 护栏：本轮已采样时只警告不阻止（开发者说了算），但必须知道这轮数据已不可比。
+     */
+    private applyTiers (arg: string, isScale: boolean): any {
+        const tiers = String(arg || '')
+            .split(/[,\s]+/)
+            .map((s) => Number(s))
+            .filter((v) => Number.isFinite(v) && v > 0)
+            .sort((a, b) => b - a);
+        if (!tiers.length) {
+            console.warn('[StressTest] 档位格式不对，例：tiers:0.85,0.7 或 ftiers:60,40,30');
+            return null;
+        }
+        if (this.csv.rowCount > 2) {
+            console.warn('[StressTest] 本轮已采样 ' + this.csv.rowCount
+                + ' 行——改档位会让这一轮前后梯度不同、数据不可比；'
+                + '正式实验请先 off → on 重来，或直接作废本轮');
+        }
+        if (isScale) this.thermalBridge.setScaleTiers(tiers);
+        else this.thermalBridge.setFrameRateTiers(tiers);
+        return this.thermalBridge.tiers();
     }
 
     /** copypage:N —— 第 N 页（每页 120 行，自动算区间） */

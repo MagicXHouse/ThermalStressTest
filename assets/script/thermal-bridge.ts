@@ -223,6 +223,37 @@ export class ThermalBridge {
         return thermalApi() !== null;
     }
 
+    /** 读当前档位梯度（分辨率 / 帧率两套） */
+    public tiers (): any {
+        const th: any = thermalApi();
+        return {
+            scale: th && typeof th.getScaleTiers === 'function' ? th.getScaleTiers() : [],
+            frameRate: th && typeof th.getFrameRateTiers === 'function' ? th.getFrameRateTiers() : [],
+        };
+    }
+
+    /** 运行时替换分辨率档位梯度（只应在开跑前调用） */
+    public setScaleTiers (tiers: number[]): void {
+        const th: any = thermalApi();
+        if (!th || typeof th.setScaleTiers !== 'function') {
+            console.warn('[StressTest] thermal.setScaleTiers 不可用（引擎过旧，需重新构建自定义引擎）');
+            return;
+        }
+        th.setScaleTiers(tiers);
+        console.log('[StressTest] 分辨率档位 = 1.00 / ' + tiers.join(' / ') + '（杠杆已回到最高档）');
+    }
+
+    /** 运行时替换帧率档位梯度（只应在开跑前调用） */
+    public setFrameRateTiers (tiers: number[]): void {
+        const th: any = thermalApi();
+        if (!th || typeof th.setFrameRateTiers !== 'function') {
+            console.warn('[StressTest] thermal.setFrameRateTiers 不可用（引擎过旧）');
+            return;
+        }
+        th.setFrameRateTiers(tiers);
+        console.log('[StressTest] 帧率档位 = ' + tiers.join(' / ') + '（帧率已还原到最高档）');
+    }
+
     public leverScope (): string {
         return this._leverScope;
     }
