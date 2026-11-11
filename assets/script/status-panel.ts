@@ -43,12 +43,17 @@ export class StatusPanel {
         const root = new Node('StatusPanel');
         root.layer = Layers.Enum.UI_2D;
         canvas.addChild(root);
+        const panelH = (H + GAP) * ROWS + 46;
         const rt = root.addComponent(UITransform);
-        rt.setContentSize(W, (H + GAP) * ROWS + 46);
+        rt.setContentSize(W, panelH);
         rt.setAnchorPoint(0, 1);
-        // 右上角：左侧是负载滑块，右下角是复制按钮
+        // 右下角、叠在「复制CSV」按钮正上方：右侧对齐同一列，互不遮挡
+        // 复制按钮尺寸见 copy-csv-button.ts（168x76，距边 24）
+        const COPY_BTN_W = 168;
+        const COPY_BTN_H = 76;
+        const COPY_BTN_GAP = 8;
         const posX = w / 2 - M - W;
-        const posY = h / 2 - M;
+        const posY = -h / 2 + M + COPY_BTN_H + COPY_BTN_GAP + panelH;
         root.setPosition(posX, posY, 0);
         this._root = root;
 
@@ -77,7 +82,7 @@ export class StatusPanel {
         }
         this.refresh();
         console.log('[StressTest] 状态面板已创建 @ (' + Math.round(posX) + ', ' + Math.round(posY)
-            + ')，Canvas ' + Math.round(w) + 'x' + Math.round(h) + '（右上角，只读）');
+            + ')，Canvas ' + Math.round(w) + 'x' + Math.round(h) + '（右下角、复制按钮上方，只读）');
     }
 
     private _makeRow (parent: Node, W: number, H: number, top: number): { node: Node; label: Label } {
