@@ -41,7 +41,10 @@ export class CopyCsvButton {
         t.setContentSize(W, H);
         t.setAnchorPoint(0, 0);
         // Canvas 的锚点在中心，所以左下角要从 (-w/2, -h/2) 起算
-        node.setPosition(-w / 2 + M, -h / 2 + M, 0);
+        // 右下角：左下角被 profiler 的性能统计占用，会和按钮叠在一起
+        const posX = w / 2 - M - W;
+        const posY = -h / 2 + M;
+        node.setPosition(posX, posY, 0);
 
         const g = node.addComponent(Graphics);
         g.fillColor = new Color(0, 0, 0, 150);
@@ -66,7 +69,8 @@ export class CopyCsvButton {
         node.on(Node.EventType.TOUCH_END, this._onClick, this);
 
         this._root = node;
-        console.log('[StressTest] "复制CSV"按钮已创建（左下角 ' + W + 'x' + H + '）');
+        console.log('[StressTest] "复制CSV"按钮已创建 @ (' + Math.round(posX) + ', ' + Math.round(posY)
+            + ')，' + W + 'x' + H + '（右下角）');
     }
 
     /** 移除按钮（后续并进操作面板时会用到） */
