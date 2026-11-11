@@ -36,7 +36,7 @@ const { ccclass, property } = _decorator;
  * ── 常用控制台入口（运行时挂在 globalThis.stressTest 上）────────────────────
  *   GPU: setHeatPlaneCount(0~8) / setPlaneCoverage(0.05~1)
  *   CPU: setSpawnCount(n) / setCpuWork(0~2000) / setPerCubeBaseOps(n)
- *   DRS: setScale(1|0.85|0.7|0.3) / thermalOn() / thermalOff() / thermalDown() / thermalUp()
+ *   DRS: setScale(1|0.85|0.7) / thermalOn() / thermalOff() / thermalDown() / thermalUp()
  *   数据: exportCsv() / printCsv(n) / getStatus() / logStatus() / tintInfo()
  */
 
@@ -105,8 +105,8 @@ export class StressTestController extends Component {
     @property({ tooltip: '降档触发阈值(%)：60fps 目标下 10% ⇒ 实测低于 54.5fps 才降档' })
     public thermalTriggerPercent: number = 10;
 
-    @property({ tooltip: '分辨率地板：档位为 1.0 / 0.85 / 0.7 / 本值' })
-    public thermalMinScale: number = 0.3;
+    @property({ tooltip: '分辨率地板：档位为 1.00 / 0.85 / 本值（默认三档 1.00 / 0.85 / 0.70）' })
+    public thermalMinScale: number = 0.7;
 
     @property({ tooltip: '温控预热时长（秒），会传给 thermal.warmupSeconds；同时作为"延后开始采样"的时长，避免预热期污染 baseline' })
     public thermalWarmupSeconds: number = 20;
@@ -225,7 +225,7 @@ export class StressTestController extends Component {
      * 互斥校验：温控和 DRS A/B 循环都会写 pipeline.shadingScale，同时开 = 互相覆盖。
      *
      * 为什么必须互斥：温控的 ScaleAction 自己记账（_currentScale 只在构造时读一次 pipeline），
-     * 外部把 0.30 改成别的值它毫不知情；于是它下一次"降档"可能把 0.30 写成 0.85 —— 反而升了分辨率，
+     * 外部把 0.70 改成别的值它毫不知情；于是它下一次"降档"可能把 0.70 写成 0.85 —— 反而升了分辨率，
      * 同时 CSV 的 shading_scale 列变成两路混合的方波，这组数据不能用来论证温控效果。
      *
      * 处置：以温控为准，关掉 DRS，并且**大声报错**（不静默改配置，否则用户以为 DRS 还在工作）。
@@ -296,10 +296,10 @@ export class StressTestController extends Component {
         console.log('[StressTest] attached to globalThis.stressTest');
         console.log('  A/GPU: setHeatPlaneCount(1~8) 改叠层数 | setPlaneCoverage(0~1) 改单层面积');
         console.log('  B/CPU: setSpawnCount(n) | setCpuWork(0~2000) | setPerCubeBaseOps(n)');
-        console.log('  drs  : startDrsToggle() | stopDrsToggle() | setScale(1|0.85|0.7|0.3) | thermalOn() | thermalOff()');
+        console.log('  drs  : startDrsToggle() | stopDrsToggle() | setScale(1|0.85|0.7) | thermalOn() | thermalOff()');
         console.log('  diag : diagFsr() | diagPlane() | getStatus() | logStatus() | exportCsv() | printCsv(n)');
         console.log('  命令通道（控制台看不到 stressTest 时用这个，微信任意上下文都行）:');
-        console.log('    wx.setStorageSync(\'__stressCmd\', \'down\') / \'up\' / \'status\' / \'spawn:1500\' / \'scale:0.7\'');
+        console.log('    wx.setStorageSync(\'__stressCmd\', \'down\') / \'up\' / \'status\' / \'spawn:1500\' / \'scale:0.6\'');
 
         // 真机拿不到 performance.memory，只剩"内存告警"这个弱信号（level 5/10/15）。
         // 长测里如果频繁告警，说明内存在涨 —— 作为 J-03 的真机旁证。
@@ -478,7 +478,7 @@ export class StressTestController extends Component {
      */
     public setScale(scale: number) {
         // 温控**当前真的开着**时手动改 scale：ScaleAction 自己记账（_currentScale），感知不到这次改动，
-        // 它下一次升降档会基于旧值算档位，可能把 0.30 写回 0.85（反而升了分辨率）。所以要告警。
+        // 它下一次升降档会基于旧值算档位，可能把 0.70 写回 0.85（反而升了分辨率）。所以要告警。
         // 注意判"实际状态"而不是面板开关：面板 enableThermalControl=true 但已经 thermalOff() 的情况下
         // 手动改 scale 是安全的，不该告警（之前就是这样误报的）。
         if (this.thermalBridge.isActive()) {

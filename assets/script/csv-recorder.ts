@@ -18,7 +18,7 @@ import { game, director } from 'cc';
 // battery_pct   电量百分比（wx.getBatteryInfoSync，非微信环境为 NA）
 // load_gpu_layers 实际参与压测的平面层数（历史列名，场景 A 专用）
 // spawn_count   立方体数量（场景 B 用）
-// shading_scale 当前分辨率缩放档（温控降过档会变 0.80/0.60）
+// shading_scale 当前分辨率缩放档（温控降过档会变 0.85/0.70）
 // frame_rate    game.frameRate 帧率档位（不是实测 fps）
 // fps_std       窗口内逐帧 FPS 的标准差 = 抖动
 // drop_rate     超过"采样起点预算"的帧占比 %，跨温控阶段可比；判定含 5% 容差（见 _flushRow 的 DROP_TOLERANCE）
