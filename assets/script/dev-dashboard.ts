@@ -61,7 +61,10 @@ export class DevDashboard {
         const rt = root.addComponent(UITransform);
         rt.setContentSize(W, (H + GAP) * 4 + 50);
         rt.setAnchorPoint(0, 1);
-        root.setPosition(-w / 2 + M, h / 2 - M, 0);
+        // 右上角：左侧是负载滑块（Slider_CPU / Slider_GPU），不能占
+        const posX = w / 2 - M - W;
+        const posY = h / 2 - M;
+        root.setPosition(posX, posY, 0);
         this._root = root;
 
         // 4 个按钮：2 个开关 + 2 个档位循环
@@ -98,7 +101,8 @@ export class DevDashboard {
             console.warn('[StressTest] 本包没有 thermal 模块（构建时被裁剪），开发者面板置灰');
         }
         this._refresh();
-        console.log('[StressTest] 开发者面板已创建（左上角）');
+        console.log('[StressTest] 开发者面板已创建 @ (' + Math.round(posX) + ', ' + Math.round(posY)
+            + ')，Canvas ' + Math.round(w) + 'x' + Math.round(h) + '（右上角）');
     }
 
     private _makeButton (parent: Node, W: number, H: number, top: number): { node: Node; label: Label } {
