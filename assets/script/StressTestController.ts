@@ -9,7 +9,7 @@ import { HeatPlaneRig, TintMode } from './heat-plane';
 import { ThermalBridge, DowngradeOrder } from './thermal-bridge';
 import { DrsProbe } from './drs-probe';
 import { CopyCsvButton } from './copy-csv-button';
-import { LeverPanel } from './lever-panel';
+import { DevDashboard } from './dev-dashboard';
 import { CpuCubes } from './cpu-cubes';
 const { ccclass, property } = _decorator;
 
@@ -171,7 +171,7 @@ export class StressTestController extends Component {
     @property({ tooltip: '没指定 copyButton 时，是否自动创建左下角"复制CSV"按钮' })
     public autoCreateCopyButton: boolean = true;
 
-    @property({ tooltip: '是否自动创建左上角"杠杆开关"面板（分辨率温控 / 帧率温控）' })
+    @property({ tooltip: '是否自动创建左上角"开发者面板"（温控杠杆开关 + 档位梯度）' })
     public autoCreateLeverPanel: boolean = true;
 
     // ==================== 内部状态 ====================
@@ -265,7 +265,7 @@ export class StressTestController extends Component {
         }
 
         if (this.autoCreateLeverPanel) {
-            new LeverPanel(this).build();
+            new DevDashboard(this).build();
         }
         this.applyLoad();
         if (this.planes.count > 0) this.diagPlane();   // 只在启动时打一次，拖滑块不会刷屏
