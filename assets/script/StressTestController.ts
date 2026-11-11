@@ -49,6 +49,12 @@ export class StressTestController extends Component {
     @property({ tooltip: '代码温控开关：勾选=开温控，不勾=关温控（构建两个包做 A/B 对比）' })
     public enableThermalControl: boolean = false;
 
+    @property({ tooltip: '分辨率温控开关：勾选=允许降分辨率。GPU 负载实验（只开平面）用这个' })
+    public enableScaleControl: boolean = true;
+
+    @property({ tooltip: '帧率温控开关：勾选=允许降帧率。CPU 负载实验（只开立方体）用这个' })
+    public enableFrameRateControl: boolean = true;
+
     @property({ tooltip: '是否把 CSV 结果写入手机文件' })
     public writeCsv: boolean = true;
 
@@ -171,8 +177,8 @@ export class StressTestController extends Component {
     @property({ tooltip: '没指定 copyButton 时，是否自动创建左下角"复制CSV"按钮' })
     public autoCreateCopyButton: boolean = true;
 
-    @property({ tooltip: '是否自动创建左上角"开发者面板"（温控杠杆开关 + 档位梯度）' })
-    public autoCreateLeverPanel: boolean = true;
+    @property({ tooltip: '是否自动创建右上角"开发者面板"（运行时临时改杠杆/档位；正式实验以面板勾选为准）' })
+    public autoCreateDevDashboard: boolean = true;
 
     // ==================== 内部状态 ====================
 
@@ -264,7 +270,7 @@ export class StressTestController extends Component {
             new CopyCsvButton(this).build();
         }
 
-        if (this.autoCreateLeverPanel) {
+        if (this.autoCreateDevDashboard) {
             new DevDashboard(this).build();
         }
         this.applyLoad();
@@ -273,6 +279,7 @@ export class StressTestController extends Component {
         // FSR 材质必须先就绪，否则第一次降分辨率会"糊着降"（没有升采样）
         this.thermalBridge.initFsr(() => {
             if (this.enableThermalControl) {
+                this.applyLeverSwitches();
                 this.thermalOn();
             } else {
                 console.log('[StressTest] thermal OFF (enableThermalControl = false)');
@@ -312,6 +319,24 @@ export class StressTestController extends Component {
         // 真机拿不到 performance.memory，只剩"内存告警"这个弱信号（level 5/10/15）。
         // 长测里如果频繁告警，说明内存在涨 —— 作为 J-03 的真机旁证。
         this._hookMemoryWarning();
+    }
+
+    /**
+     * 按面板勾选设置温控杠杆（分辨率 / 帧率）。
+     * 两个都关没有意义 —— 强制打开分辨率温控并告警，避免"温控开着但什么都不降"。
+     */
+    private applyLeverSwitches(): void {
+        let scale = this.enableScaleControl !== false;
+        const fps = this.enableFrameRateControl !== false;
+        if (!scale && !fps) {
+            console.warn('[StressTest] 分辨率温控与帧率温控都关掉了没有意义，已强制打开分辨率温控');
+            this.enableScaleControl = true;
+            scale = true;
+        }
+        const scope = scale && fps ? 'both' : (scale ? 'scale' : 'frameRate');
+        this.thermalBridge.setLeverScope(scope);
+        console.log('[StressTest] 温控杠杆：分辨率=' + (scale ? '开' : '关')
+            + '、帧率=' + (fps ? '开' : '关') + '（' + scope + '）');
     }
 
     /** 内存告警计数（真机 J-03 的旁证） */
