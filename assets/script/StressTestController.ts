@@ -9,7 +9,7 @@ import { HeatPlaneRig, TintMode } from './heat-plane';
 import { ThermalBridge, DowngradeOrder } from './thermal-bridge';
 import { DrsProbe } from './drs-probe';
 import { CopyCsvButton } from './copy-csv-button';
-import { DevDashboard } from './dev-dashboard';
+import { StatusPanel } from './status-panel';
 import { CpuCubes } from './cpu-cubes';
 const { ccclass, property } = _decorator;
 
@@ -177,8 +177,8 @@ export class StressTestController extends Component {
     @property({ tooltip: '没指定 copyButton 时，是否自动创建左下角"复制CSV"按钮' })
     public autoCreateCopyButton: boolean = true;
 
-    @property({ tooltip: '是否自动创建右上角"开发者面板"（运行时临时改杠杆/档位；正式实验以面板勾选为准）' })
-    public autoCreateDevDashboard: boolean = true;
+    @property({ tooltip: '是否自动创建右上角状态面板（只读：显示温控杠杆、档位梯度、当前 scale/fps/level）' })
+    public autoCreateStatusPanel: boolean = true;
 
     // ==================== 内部状态 ====================
 
@@ -270,8 +270,9 @@ export class StressTestController extends Component {
             new CopyCsvButton(this).build();
         }
 
-        if (this.autoCreateDevDashboard) {
-            new DevDashboard(this).build();
+        if (this.autoCreateStatusPanel) {
+            this._statusPanel = new StatusPanel(this);
+            this._statusPanel.build();
         }
         this.applyLoad();
         if (this.planes.count > 0) this.diagPlane();   // 只在启动时打一次，拖滑块不会刷屏
@@ -342,6 +343,10 @@ export class StressTestController extends Component {
     /** 内存告警计数（真机 J-03 的旁证） */
     private _memWarnings = 0;
 
+    /** 右上角只读状态面板（每 0.5 秒刷新一次） */
+    private _statusPanel: StatusPanel | null = null;
+    private _statusAccum = 0;
+
     /**
      * \`wx.onMemoryWarning\` **没有对应的 off**，注册多次就会累积多个闭包，
      * 每个闭包都会把当时的控制器（连同场景节点）一直引用住 —— 换场景/重载时就是泄漏。
@@ -403,6 +408,13 @@ export class StressTestController extends Component {
      */
     update(dt: number) {
         this._pollCommands(dt);
+
+        // 状态面板只读，2Hz 刷新足够（字符串拼接，成本可忽略）
+        this._statusAccum += dt;
+        if (this._statusAccum >= 0.5) {
+            this._statusAccum = 0;
+            if (this._statusPanel) this._statusPanel.refresh();
+        }
 
         this.cubes.animate(dt);
 
