@@ -215,7 +215,15 @@ export class ThermalBridge {
      *   'both'      → 两个都用（默认）
      * 引擎侧两个开关是独立的；分辨率/帧率的收益要分开量，否则会互相掩盖。
      */
+    /** 当前杠杆范围（'scale' / 'frameRate' / 'both'），不影响引擎，只用于提示与状态展示 */
+    private _leverScope = 'both';
+
+    public leverScope (): string {
+        return this._leverScope;
+    }
+
     public setLeverScope (scope: string): void {
+        this._leverScope = scope;
         const th: any = thermalApi();
         if (!th) {
             console.warn('[StressTest] thermal 不可用，无法设置杠杆范围');

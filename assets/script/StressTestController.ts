@@ -316,6 +316,28 @@ export class StressTestController extends Component {
      */
     private static _memWarnHooked = false;
 
+    /**
+     * 负载类型与杠杆范围不匹配时提示（**不自动改**——A/B 实验的条件必须显式固定）。
+     * 只开平面 = GPU 瓶颈 → 降分辨率有效；只开立方体 = CPU 瓶颈 → 降帧率有效。
+     */
+    private _leverHint(): void {
+        if (!this.thermalBridge.isActive()) return;
+        const gpu = this.planes.count;
+        const cpu = this.cubes.count;
+        const scope = this.thermalBridge.leverScope();
+        if (gpu > 0 && cpu > 0) {
+            console.warn('[StressTest] 当前是混合负载（GPU + CPU 同时开）：两个杠杆会一起动，A/B 结论会互相掩盖；'
+                + '正式实验请只开一种负载');
+            return;
+        }
+        if (cpu > 0 && gpu === 0 && scope !== 'frameRate') {
+            console.warn('[StressTest] CPU 负载场景建议「只降帧率」（lever:frameRate），当前=' + scope);
+        }
+        if (gpu > 0 && cpu === 0 && scope !== 'scale') {
+            console.warn('[StressTest] GPU 负载场景建议「只降分辨率」（lever:scale），当前=' + scope);
+        }
+    }
+
     private _hookMemoryWarning(): void {
         const g: any = typeof globalThis !== 'undefined' ? globalThis : {};
         const wx = g.wx;
@@ -680,15 +702,18 @@ export class StressTestController extends Component {
             case 'csvpages': return this.csv.pageInfo();
             case 'clean': return this.cleanOldCsv();
             case 'level': return this.thermalLevel();
-            case 'spawn': case 'cubes': return this.setSpawnCount(num);
-            case 'planes': return this.setHeatPlaneCount(num);
+            case 'spawn': case 'cubes': this.setSpawnCount(num); return this._leverHint();
+            case 'planes': this.setHeatPlaneCount(num); return this._leverHint();
             case 'scale': return this.setScale(num);
             case 'fps': return this.setFps(num);
             case 'trigger': return this.setTriggerPercent(num);
             case 'cpu': return this.setCpuWork(num);
             case 'base': return this.setPerCubeBaseOps(num);
             case 'order': return this.setDowngradeOrder(arg);
-            case 'lever': return this.thermalBridge.setLeverScope(arg || 'both');
+            case 'lever':
+                this.thermalBridge.setLeverScope(arg || 'both');
+                this._leverHint();
+                return this.thermalBridge.leverScope();
             case 'fsr': return this.setFsrEnabled(arg !== 'off' && arg !== '0' && arg !== 'false');
             case 'fsrmin': return this.setFsrMinScale(num);
             case 'diag': return this.diagFsr();
@@ -748,6 +773,8 @@ export class StressTestController extends Component {
             thermalActive: this.thermalBridge.isActive(),
             /** 内存告警累计次数（真机 J-03 旁证；devtools 里一般是 0） */
             memWarnings: this._memWarnings,
+            /** 当前杠杆范围：只降分辨率 / 只降帧率 / 两个都开 */
+            leverScope: this.thermalBridge.leverScope(),
             /** 当前降档顺序（面板值；运行时 setDowngradeOrder 会同步它） */
             downgradeOrder: this.downgradeOrder === DowngradeOrder.FrameRateFirst ? 'frameRate-first' : 'scale-first',
             drsAutoToggle: this.autoToggleDrs,
