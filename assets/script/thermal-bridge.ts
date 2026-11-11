@@ -208,6 +208,29 @@ export class ThermalBridge {
      *   thermalDown() 到 0.85（FSR 自动开）→ 记 ft_avg → setFsrEnabled(false) → 再记 ft_avg
      * 两者之差就是 FSR 在这一档的净开销。
      */
+    /**
+     * 杠杆隔离（A/B 实验用）：只留一个杠杆。
+     *   'scale'     → 只降分辨率（关掉帧率杠杆）
+     *   'frameRate' → 只降帧率（关掉分辨率杠杆）
+     *   'both'      → 两个都用（默认）
+     * 引擎侧两个开关是独立的；分辨率/帧率的收益要分开量，否则会互相掩盖。
+     */
+    public setLeverScope (scope: string): void {
+        const th: any = thermalApi();
+        if (!th) {
+            console.warn('[StressTest] thermal 不可用，无法设置杠杆范围');
+            return;
+        }
+        const wantScale = scope !== 'frameRate';
+        const wantFrame = scope !== 'scale';
+        if (typeof th.setScaleEnabled === 'function') th.setScaleEnabled(wantScale);
+        else console.warn('[StressTest] thermal.setScaleEnabled 不可用（引擎过旧）');
+        if (typeof th.setFrameRateEnabled === 'function') th.setFrameRateEnabled(wantFrame);
+        else console.warn('[StressTest] thermal.setFrameRateEnabled 不可用（引擎过旧，需重新构建自定义引擎）');
+        console.log('[StressTest] 杠杆范围 = ' + scope
+            + '（分辨率杠杆' + (wantScale ? '开' : '关') + '、帧率杠杆' + (wantFrame ? '开' : '关') + '）');
+    }
+
     public setFsrEnabled (enabled: boolean): void {
         const th = thermalApi();
         if (!th || typeof th.setFsrEnabled !== 'function') {

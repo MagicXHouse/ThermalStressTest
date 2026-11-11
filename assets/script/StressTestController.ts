@@ -688,6 +688,7 @@ export class StressTestController extends Component {
             case 'cpu': return this.setCpuWork(num);
             case 'base': return this.setPerCubeBaseOps(num);
             case 'order': return this.setDowngradeOrder(arg);
+            case 'lever': return this.thermalBridge.setLeverScope(arg || 'both');
             case 'fsr': return this.setFsrEnabled(arg !== 'off' && arg !== '0' && arg !== 'false');
             case 'fsrmin': return this.setFsrMinScale(num);
             case 'diag': return this.diagFsr();
