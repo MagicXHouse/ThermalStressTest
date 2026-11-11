@@ -16,6 +16,8 @@ import { Node, Label, UITransform, Graphics, Color, Layers, Canvas, director, ga
  */
 export class LeverPanel {
     private _ctrl: any;
+    /** 引擎里有没有 thermal 模块（A 包为 false） */
+    private _available = true;
     private _scaleBtn: Node | null = null;
     private _fpsBtn: Node | null = null;
     private _scaleLabel: Label | null = null;
@@ -74,6 +76,12 @@ export class LeverPanel {
         this._fpsBtn.on(Node.EventType.TOUCH_END, () => this._toggle('frameRate'), this);
 
         this._root = root;
+        this._available = !!this._ctrl.thermalBridge
+            && typeof this._ctrl.thermalBridge.isThermalAvailable === 'function'
+            && this._ctrl.thermalBridge.isThermalAvailable();
+        if (!this._available) {
+            console.warn('[StressTest] 本包没有 thermal 模块（构建时被裁剪），杠杆面板置灰');
+        }
         this._refresh();
         console.log('[StressTest] 杠杆面板已创建（左上角）');
     }
@@ -111,6 +119,10 @@ export class LeverPanel {
 
     /** 点击切换一个杠杆，然后把"两个开关的组合"折算成 leverScope 交给引擎 */
     private _toggle (which: 'scale' | 'frameRate'): void {
+        if (!this._available) {
+            console.warn('[StressTest] 本包没有 thermal 模块，开关无效（做温控实验请用带 thermal 的包）');
+            return;
+        }
         const scope = this._ctrl.thermalBridge.leverScope();
         const scaleOn = scope !== 'frameRate';
         const fpsOn = scope !== 'scale';
@@ -130,6 +142,12 @@ export class LeverPanel {
     }
 
     private _refresh (): void {
+        if (!this._available) {
+            this._paint(this._scaleBtn, this._scaleLabel, '分辨率温控', false);
+            this._paint(this._fpsBtn, this._fpsLabel, '帧率温控', false);
+            if (this._infoLabel) this._infoLabel.string = '本包没有温控模块（已裁剪）';
+            return;
+        }
         const scope = this._ctrl.thermalBridge.leverScope();
         const scaleOn = scope !== 'frameRate';
         const fpsOn = scope !== 'scale';

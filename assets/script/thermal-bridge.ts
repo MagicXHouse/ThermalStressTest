@@ -218,6 +218,11 @@ export class ThermalBridge {
     /** 当前杠杆范围（'scale' / 'frameRate' / 'both'），不影响引擎，只用于提示与状态展示 */
     private _leverScope = 'both';
 
+    /** 引擎里 thermal 模块是否存在（A 包被裁剪时为 false，面板据此置灰） */
+    public isThermalAvailable (): boolean {
+        return thermalApi() !== null;
+    }
+
     public leverScope (): string {
         return this._leverScope;
     }
