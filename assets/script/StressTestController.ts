@@ -675,7 +675,9 @@ export class StressTestController extends Component {
             case 'csvcheck': return this.csv.inspect();
             case 'mem': return this.memSnapshot();
             case 'export': return this.exportCsv();
-            case 'copy': return this.copyCsv(num);
+            case 'copy': return this.copyCsvRange(arg);
+            case 'copypage': return this.copyCsvPage(num);
+            case 'csvpages': return this.csv.pageInfo();
             case 'clean': return this.cleanOldCsv();
             case 'level': return this.thermalLevel();
             case 'spawn': case 'cubes': return this.setSpawnCount(num);
@@ -778,6 +780,28 @@ export class StressTestController extends Component {
      * @param lastN 只要最近 N 行；0 = 全部
      */
     public copyCsv(lastN: number = 0): any { return this.csv.copyCsv(lastN); }
+
+    /**
+     * 复制命令的统一解析：
+     *   copy            → 全部
+     *   copy:200        → 最近 200 行
+     *   copy:1:120      → 第 1~120 行（分页，绕开剪贴板截断）
+     */
+    private copyCsvRange(arg: string): any {
+        const m = /^(\d+)\s*:\s*(\d+)$/.exec(arg);
+        if (m) return this.csv.copyRange(Number(m[1]), Number(m[2]));
+        const n = Number(arg);
+        if (arg && Number.isFinite(n) && n > 0) return this.csv.copyCsv(n);
+        return this.csv.copyCsv(0);
+    }
+
+    /** copypage:N —— 第 N 页（每页 120 行，自动算区间） */
+    private copyCsvPage(page: number): any {
+        const size = 120;
+        const p = Math.max(1, Math.floor(Number(page) || 1));
+        const from = (p - 1) * size + 1;
+        return this.csv.copyRange(from, from + size - 1);
+    }
 
     /**
      * 内存快照（J-03 用）。命令通道 `s('mem')`。

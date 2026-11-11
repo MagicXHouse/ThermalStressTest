@@ -32,6 +32,12 @@ export class CsvRecorder {
     private static readonly LATEST_FILE = 'thermal_latest.csv';
 
     /**
+     * 剪贴板分页大小（数据行）。实测整份 30 分钟数据（≈27KB）粘出去会被截断在 ~20KB，
+     * 所以按 120 行/页（≈9KB）分批复制，30 分钟 = 3 页。
+     */
+    public static readonly COPY_PAGE_SIZE = 120;
+
+    /**
      * 掉帧判据的容差系数（1.05 = 允许超出预算 5%）。
      *
      * 为什么必须有：判据原来是 `frames[i] > budget`，而 budget = 1000 / game.frameRate，
@@ -208,6 +214,47 @@ export class CsvRecorder {
         // 非微信（编辑器预览 / 单测）：退回打印，浏览器里可以手动复制
         console.log('[StressTest][csv] ' + text);
         return { copied: false, reason: 'no-wx-clipboard', rows, bytes, span, warn };
+    }
+
+    /** 分页信息：总行数、每页行数、总页数（30 分钟约 356 行 = 3 页） */
+    public pageInfo (): any {
+        const total = this._rows.length - 1;
+        const size = CsvRecorder.COPY_PAGE_SIZE;
+        return {
+            total,
+            pageSize: size,
+            pages: Math.max(1, Math.ceil(total / size)),
+            hint: 's(\'copy:1:120\') / s(\'copy:121:240\') / s(\'copy:241:360\')',
+        };
+    }
+
+    /**
+     * 按数据行号区间复制（1 基，含端点），用于绕开剪贴板截断。
+     * 每页都带表头，粘到不同的文件/消息里拼起来就是完整 CSV。
+     */
+    public copyRange (from: number, to: number): any {
+        const total = this._rows.length - 1;
+        if (total <= 0) {
+            console.warn('[StressTest] 还没有 CSV 数据');
+            return { copied: false, reason: 'no-data' };
+        }
+        const f = Math.max(1, Math.min(Math.floor(from), total));
+        const tt = Math.max(f, Math.min(Math.floor(to), total));
+        const out = [this._rows[0]].concat(this._rows.slice(f, tt + 1));
+        const text = out.join('\n');
+        const rows = tt - f + 1;
+        const bytes = text.length;
+        const wx = this._getWx();
+        if (wx && typeof wx.setClipboardData === 'function') {
+            wx.setClipboardData({
+                data: text,
+                success: () => console.log('[StressTest] 已复制第 ' + f + '~' + tt + ' 行（' + rows + ' 行 / ' + bytes + ' 字节）'),
+                fail: (e: any) => console.warn('[StressTest] 复制失败: ' + (e && e.errMsg)),
+            });
+            return { copied: true, from: f, to: tt, rows, total, bytes };
+        }
+        console.log('[StressTest][csv] ' + text);
+        return { copied: false, reason: 'no-wx-clipboard', from: f, to: tt, rows, total, bytes };
     }
 
     /**
