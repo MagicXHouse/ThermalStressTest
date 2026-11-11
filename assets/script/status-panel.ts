@@ -130,11 +130,15 @@ export class StatusPanel {
         }
 
         const bridge = this._ctrl.thermalBridge;
+        const st0 = typeof this._ctrl.getStatus === 'function' ? this._ctrl.getStatus() : null;
+        // 温控总开关关着时，杠杆永远不会动 —— 显示「—」而不是「开」，
+        // 否则会让人误以为"分辨率温控开着"（其实就是这次反馈的问题）。
+        const thermalActive = !!(st0 && st0.thermalActive);
         const scope = typeof bridge.leverScope === 'function' ? bridge.leverScope() : 'both';
-        const scaleOn = scope !== 'frameRate';
-        const fpsOn = scope !== 'scale';
-        this._paint(0, '分辨率温控: ' + (scaleOn ? '开' : '关'), scaleOn ? 'on' : 'off');
-        this._paint(1, '帧率温控: ' + (fpsOn ? '开' : '关'), fpsOn ? 'on' : 'off');
+        const scaleOn = thermalActive && scope !== 'frameRate';
+        const fpsOn = thermalActive && scope !== 'scale';
+        this._paint(0, '分辨率温控: ' + (thermalActive ? (scaleOn ? '开' : '关') : '—'), scaleOn ? 'on' : 'off');
+        this._paint(1, '帧率温控: ' + (thermalActive ? (fpsOn ? '开' : '关') : '—'), fpsOn ? 'on' : 'off');
 
         const tiers = typeof bridge.tiers === 'function' ? bridge.tiers() : { scale: [], frameRate: [] };
         const fmt = (arr: number[]) => (arr && arr.length ? arr.join('/') : '—');
@@ -142,7 +146,7 @@ export class StatusPanel {
         this._paint(3, '帧率档位: ' + fmt(tiers.frameRate), 'neutral');
 
         if (this._info) {
-            const st = typeof this._ctrl.getStatus === 'function' ? this._ctrl.getStatus() : null;
+            const st = st0;
             this._info.string = st
                 ? ('scale ' + st.shadingScale + '｜' + st.frameRate + 'fps｜L' + st.thermalLevel
                     + '｜' + (st.thermalActive ? '温控开' : '温控关'))

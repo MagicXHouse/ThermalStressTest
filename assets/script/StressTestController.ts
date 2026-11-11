@@ -284,6 +284,7 @@ export class StressTestController extends Component {
                 this.thermalOn();
             } else {
                 console.log('[StressTest] thermal OFF (enableThermalControl = false)');
+                console.log('[StressTest] 温控关：分辨率/帧率杠杆都不会生效（状态面板显示为「—」）');
             }
 
             const beginSampling = () => {
