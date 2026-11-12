@@ -257,6 +257,20 @@ export class ThermalBridge {
         console.log('[StressTest] 帧率档位 = ' + tiers.join(' / ') + '（帧率已还原到最高档）');
     }
 
+    /**
+     * 升档顺序（'auto' | 'scale-first' | 'frameRate-first'）。
+     * 'scale-first' = 先把画质提回来，再提帧率。
+     */
+    public setUpgradeOrder (order: string): void {
+        const th: any = thermalApi();
+        if (!th || typeof th.setUpgradeOrder !== 'function') {
+            console.warn('[StressTest] thermal.setUpgradeOrder 不可用（引擎过旧，需重新构建自定义引擎）');
+            return;
+        }
+        th.setUpgradeOrder(order);
+        console.log('[StressTest] 升档顺序 = ' + order);
+    }
+
     /** 运行时开关"自动试探升档"（升档实验用，免重新打包） */
     public setAutoUpgrade (enabled: boolean): void {
         const th: any = thermalApi();

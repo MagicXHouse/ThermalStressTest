@@ -760,6 +760,11 @@ export class StressTestController extends Component {
             case 'order': return this.setDowngradeOrder(arg);
             case 'tiers': return this.applyTiers(arg, true);
             case 'ftiers': return this.applyTiers(arg, false);
+            case 'uporder': {
+                const v = arg === 'scale' ? 'scale-first' : arg === 'frame' || arg === 'frameRate' ? 'frameRate-first' : 'auto';
+                this.thermalBridge.setUpgradeOrder(v);
+                return v;
+            }
             case 'upgrade': return this.thermalBridge.setAutoUpgrade(arg !== 'off' && arg !== '0' && arg !== 'false');
             case 'lever':
                 this.thermalBridge.setLeverScope(arg || 'both');
