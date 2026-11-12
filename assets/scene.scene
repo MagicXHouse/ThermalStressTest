@@ -312,9 +312,9 @@
     },
     "_enabled": true,
     "__prefab": null,
-    "enableThermalControl": true,
+    "enableThermalControl": false,
     "enableScaleControl": false,
-    "enableFrameRateControl": true,
+    "enableFrameRateControl": false,
     "writeCsv": true,
     "showProfiler": true,
     "heatPlane": {
@@ -346,7 +346,7 @@
       "__expectedType__": "cc.Prefab"
     },
     "spawnRadius": 20,
-    "spawnCount": 1500,
+    "spawnCount": 0,
     "rotationSpeed": 90,
     "orbitSpeed": 10,
     "cpuWorkPerCube": 0,
@@ -480,7 +480,7 @@
       "__id__": 41
     },
     "min": 0,
-    "max": 2000,
+    "max": 4000,
     "step": 100,
     "initialValue": 0,
     "decimals": 0,
@@ -1295,9 +1295,9 @@
       "__id__": 24
     },
     "min": 0,
-    "max": 8,
+    "max": 16,
     "step": 1,
-    "initialValue": 1,
+    "initialValue": 3,
     "decimals": 0,
     "suffix": "层",
     "debounceMs": 250,

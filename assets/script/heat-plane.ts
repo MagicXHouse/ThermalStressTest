@@ -26,6 +26,9 @@ export enum TintMode {
  * 关键约束：只有在 applyLoad()/setCount()/setCoverage() 时才动节点 —— update() 里一行都不能有，
  * 这是场景 A "GPU 是唯一瓶颈"（红线 2）的前提。
  */
+/** 层数上限。中端机 3~5 层就打满，旗舰机 8 层仍能满帧，所以放到 16。 */
+export const MAX_PLANE_LAYERS = 16;
+
 export class HeatPlaneRig {
     private _ctrl: any;
     /** 平面副本（不含模板）。0 层时会被全部销毁；N 层时长度 = N-1 */
@@ -134,7 +137,7 @@ export class HeatPlaneRig {
      * 0 层 = 彻底关掉：平面隐藏、所有副本销毁，GPU 侧零片元。
      */
     public setCount (count: number): void {
-        this._ctrl.heatPlaneCount = Math.max(0, Math.min(8, Math.floor(count)));
+        this._ctrl.heatPlaneCount = Math.max(0, Math.min(MAX_PLANE_LAYERS, Math.floor(count)));
         if (this._ctrl.gpuSlider) this._ctrl.gpuSlider.setValue(this._ctrl.heatPlaneCount, true);
         this.applyLoad();
     }
@@ -162,7 +165,7 @@ export class HeatPlaneRig {
         this._validatePlaneNode(tpl);
         this._checkPlaneMaterial(tpl);
 
-        const want = Math.max(0, Math.min(8, Math.floor(this._ctrl.heatPlaneCount)));
+        const want = Math.max(0, Math.min(MAX_PLANE_LAYERS, Math.floor(this._ctrl.heatPlaneCount)));
         this._ctrl.heatPlaneCount = want;
 
         while (this._clones.length > Math.max(0, want - 1)) {
