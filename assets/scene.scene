@@ -313,6 +313,8 @@
     "_enabled": true,
     "__prefab": null,
     "enableThermalControl": true,
+    "enableScaleControl": false,
+    "enableFrameRateControl": true,
     "writeCsv": true,
     "showProfiler": true,
     "heatPlane": {
@@ -330,12 +332,12 @@
     "drsToggleInterval": 10,
     "drsLowScale": 0.3,
     "drsLabel": null,
-    "thermalMinFrameRate": 45,
+    "thermalMinFrameRate": 20,
     "thermalTriggerPercent": 10,
-    "thermalMinScale": 0.3,
+    "thermalMinScale": 0.7,
     "thermalWarmupSeconds": 20,
     "enableFsr": true,
-    "enableAutoUpgrade": true,
+    "enableAutoUpgrade": false,
     "probeIntervalSeconds": 60,
     "recoveryProbeSeconds": 15,
     "downgradeOrder": 0,
@@ -344,7 +346,7 @@
       "__expectedType__": "cc.Prefab"
     },
     "spawnRadius": 20,
-    "spawnCount": 0,
+    "spawnCount": 1500,
     "rotationSpeed": 90,
     "orbitSpeed": 10,
     "cpuWorkPerCube": 0,
@@ -355,6 +357,10 @@
     "gpuSlider": {
       "__id__": 31
     },
+    "copyButton": null,
+    "copyTipLabel": null,
+    "autoCreateCopyButton": true,
+    "autoCreateStatusPanel": true,
     "_id": "57xiASOZBDdr7aTuamvuxp"
   },
   {
