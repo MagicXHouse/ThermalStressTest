@@ -291,6 +291,7 @@ export class StressTestController extends Component {
 
             const beginSampling = () => {
                 // 采样与温控状态同生命周期：到这里温控才真正就绪
+                this.setKeepScreenOn(true);
                 this.csv.start();
                 if (this.writeCsv) {
                     this.csv.cleanOld();
@@ -356,6 +357,25 @@ export class StressTestController extends Component {
      * 所以用静态标记保证整个 App 生命周期只注册一次，回调里再去取"当前"控制器。
      */
     private static _memWarnHooked = false;
+
+    /**
+     * 跑测期间让屏幕常亮。
+     * 为什么要这个：小米 15 / MIUI 的"自动锁屏"最长只有 10 分钟（没有"永不"），
+     * 30 分钟一轮必须中途点屏幕 —— 而点击会打断采样、污染温度与帧率。
+     * wx.setKeepScreenOn 只在**前台运行期间**生效，正是我们要的。
+     */
+    private setKeepScreenOn(on: boolean): void {
+        const wx: any = (globalThis as any).wx;
+        if (!wx || typeof wx.setKeepScreenOn !== 'function') {
+            console.warn('[StressTest] wx.setKeepScreenOn 不可用，请手动把系统自动锁屏调大');
+            return;
+        }
+        wx.setKeepScreenOn({
+            keepScreenOn: on,
+            success: () => console.log('[StressTest] 屏幕常亮 = ' + (on ? '开' : '关')),
+            fail: (e: any) => console.warn('[StressTest] setKeepScreenOn 失败: ' + (e && e.errMsg)),
+        });
+    }
 
     /**
      * 负载类型与杠杆范围不匹配时提示（**不自动改**——A/B 实验的条件必须显式固定）。
