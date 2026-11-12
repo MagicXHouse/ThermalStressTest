@@ -86,10 +86,25 @@ function makeCtrl() {
     c.enableThermalControl = true;
     c.autoToggleDrs = true;
     c.drs = { started: 0, start() { this.started++; }, stop() { }, updateLabel() { } };
-    c.thermalBridge = { fsrReady: false };
+    // thermalBridge 的替身：温控视为已生效（isActive() 是 setScale 判定"谁接管 shadingScale"的依据）。
+    // getStatus() 还会读 leverScope()，所以按真实 API 面把桩给全，避免任何一处漏桩把整个文件崩掉。
+    c.thermalBridge = {
+        fsrReady: false,
+        isActive: () => true,
+        hasEverBeenActive: () => true,
+        leverScope: () => ({ scale: true, frameRate: true, label: 'both' }),
+        tiers: () => ({ scale: [], frameRate: [] }),
+        level: () => 0,
+        diagFsr: () => ({}),
+        api: () => null,
+        on() { }, off() { }, pause() { }, resume() { }, down() { }, up() { },
+        initFsr() { }, setDowngradeOrder() { }, setFrameRateTiers() { }, setScaleTiers() { },
+        setTriggerPercent() { }, setFsrEnabled() { }, setFsrMinScale() { }, setLeverScope() { },
+    };
     c.planes = { count: 3 };
-    c.cubes = { count: 0 };
-    c.csv = { lastFps: 42, sampling: true, rowCount: 7 };
+    // getStatus() 会读 cubes 的耗时字段（cubeCpuMs），替身要给全，否则整个用例文件崩在 getStatus
+    c.cubes = { count: 0, lastMs: 0, avgMs: 0, perCubeUs: 0 };
+    c.csv = { lastFps: 42, sampling: true, rowCount: 7, gaps: 0 };
     return c;
 }
 
@@ -128,7 +143,7 @@ console.warn = (...a) => warns.push(a.join(' '));
 const c5 = makeCtrl();
 c5.setScale(0.7);
 console.warn = origWarn;
-check('温控开启时 setScale 给出告警', warns.some(l => l.includes('接管 shadingScale')));
+check('温控开启时 setScale 给出告警', warns.some(l => l.includes('温控当前是开启状态')));
 check('setScale 仍然写入了 pipeline', fakePipeline.shadingScale === 0.7, 'scale=' + fakePipeline.shadingScale);
 
 // 5) getStatus 暴露冲突标记
