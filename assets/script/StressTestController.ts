@@ -280,8 +280,10 @@ export class StressTestController extends Component {
         // FSR 材质必须先就绪，否则第一次降分辨率会"糊着降"（没有升采样）
         this.thermalBridge.initFsr(() => {
             if (this.enableThermalControl) {
-                this.applyLeverSwitches();
+                // 顺序很重要：先 enable() 建出控制器，再设杠杆。
+                // 反过来的话 applyLeverSwitches() 只写进 config，随后的 enable(cfg) 会覆盖它。
                 this.thermalOn();
+                this.applyLeverSwitches();
             } else {
                 console.log('[StressTest] thermal OFF (enableThermalControl = false)');
                 console.log('[StressTest] 温控关：分辨率/帧率杠杆都不会生效（状态面板显示为「—」）');

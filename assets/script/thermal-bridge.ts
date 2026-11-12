@@ -102,7 +102,10 @@ export class ThermalBridge {
             recoveryProbeSeconds: c.recoveryProbeSeconds,
             // 降档顺序是开放项：先降分辨率（默认）还是先降帧率，由面板决定
             downgradeOrder: c.downgradeOrder === DowngradeOrder.FrameRateFirst ? 'frameRate-first' : 'scale-first',
-            enableScale: true,
+            // 面板勾选决定初始状态。这里曾经硬编码成 true —— 于是 applyLeverSwitches() 在
+            // enable() 之前写的 enableScale=false 会被这次合并覆盖，导致"没勾分辨率温控也降分辨率"。
+            enableScale: c.enableScaleControl !== false,
+            enableFrameRate: c.enableFrameRateControl !== false,
             // 降分辨率时是否开 FSR 升采样，由面板 enableFsr 决定（关掉 = 纯降采样）。
             // 用 !== false 兜底：老场景没有这个属性时按"开"处理，行为与之前一致。
             enableFsr: c.enableFsr !== false,
