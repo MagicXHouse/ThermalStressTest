@@ -106,3 +106,32 @@ IORegistry 查询都返回空，diagnostics GasGauge 里也没有温度字段。
 - 真机实测：iPhone18,3 / iOS 26.5.2，连续采样 30.8 -> 30.9，CSV 已用 plot_temp.py 的
   load_data 实际解析通过
 - .bat 包装器：带参数运行正常
+
+## macOS / Linux 版（跨平台）
+
+bat/ps1 是 Windows 专用（Mac 没有 cmd，ps1 里还写死了 idevicediagnostics.exe、
+	ools\ 反斜杠路径与 python/py 命令名）。跨平台用的是同一套读数逻辑的 Python 版：
+
+    monitor_temp_ios.sh      macOS / Linux 入口（薄封装）
+    monitor_temp_ios.py      真正的实现（读数复用 ios_temp_reader.py）
+
+用法与 .bat 完全一致：
+
+    ./monitor_temp_ios.sh                        # 每 5 秒采一次，写 temp_log_ios.csv
+    ./monitor_temp_ios.sh -Interval 10 -Csv out.csv
+    ./monitor_temp_ios.sh -Fresh                 # 清空重建 CSV
+    ./monitor_temp_ios.sh -MaxSamples 120
+    ./monitor_temp_ios.sh -Diag                  # 诊断，写 ios_diag.txt
+    ./monitor_temp_ios.sh -SelfTest              # 不接设备自测（CSV 格式 + 解析）
+    ./monitor_temp_ios.sh -Mock                  # 模拟温度跑流程
+
+也可以直接跑 Python（不经 .sh）：
+
+    python3 monitor_temp_ios.py -Mock -MaxSamples 3
+
+依赖：
+
+    python3 -m pip install --only-binary :all: pymobiledevice3
+
+输出与 Android 脚本逐字节一致（`Time,Temperature` + `HH:MM:SS,31.2`），
+plot_temp.py / 画对比图.py / 检查温度日志.js 都不用改。
