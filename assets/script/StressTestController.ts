@@ -152,7 +152,13 @@ export class StressTestController extends Component {
     @property({ tooltip: '绕中心公转速度（度/秒）' })
     public orbitSpeed: number = 10;
 
-    @property({ range: [0, 2000, 50], slide: true, tooltip: '每个立方体每帧额外做的浮点运算次数（0=关）。立方体数量不变时用它加大 CPU 负载' })
+    @property({
+        range: [0, 100000, 1000],
+        slide: true,
+        tooltip: '每个立方体每帧额外做的浮点运算次数（0=关）。立方体数量不变时用它加大 CPU 负载。'
+            + '中端机几千就够；旗舰机（如骁龙 8 Elite）可能要 2~6 万才能压满。'
+            + '校准判据是 getStatus().cubeCpuMs.avg 达到 14~16ms（接近 16.67ms 预算），不要按 fps 猜',
+    })
     public cpuWorkPerCube: number = 0;
 
     @property({ range: [0, 10000, 100], slide: true, tooltip: '每个立方体每帧的**基础**浮点运算次数。这是"数量越多 CPU 越重"的来源：每帧运算量 ≈ 数量 × (本值 + cpuWorkPerCube)。默认 4000，按 getStatus().cubeCpuMs 校准' })
