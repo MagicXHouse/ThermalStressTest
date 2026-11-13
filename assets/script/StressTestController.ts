@@ -826,6 +826,20 @@ export class StressTestController extends Component {
             planeCoverage: Number(this.planeCoverage.toFixed(2)),
             gpuLayers: this.planes.count,
             cubes: this.cubes.count,
+            /**
+             * 设备性能等级（微信 `wx.getSystemInfoSync().benchmarkLevel`）：
+             * -1 = 拿不到；约 0~10 低端，10~20 中端，20+ 高端。
+             * 用来判断"温控该不该在这台机器上更保守"——高性能机可能根本不需要降档。
+             */
+            benchmarkLevel: (() => {
+                const wx: any = (globalThis as any).wx;
+                try {
+                    const info = wx && typeof wx.getSystemInfoSync === 'function' ? wx.getSystemInfoSync() : null;
+                    return info && typeof info.benchmarkLevel === 'number' ? info.benchmarkLevel : -1;
+                } catch (e) {
+                    return -1;
+                }
+            })(),
             /** 每帧浮点运算量 ≈ 数量 × (perCubeBaseOps + cpuWorkPerCube)，与 CPU 耗时应呈线性 */
             cubeOpsPerFrame: this.cubes.count * Math.floor(this.perCubeBaseOps + this.cpuWorkPerCube),
             /** 立方体脚本每帧的 CPU 耗时（毫秒）：判断"是不是真在压 CPU"，而不是靠立方体数量猜 */
