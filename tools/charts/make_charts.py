@@ -11,6 +11,7 @@
   03_帧率_CPU组.png      CPU 组帧率（看限帧是否生效）
   04_分辨率_CPU组.png    分辨率档位（看升档是否把降档撤回）
   05_温升汇总.png        各轮 ΔT 柱状对比（含 IDLE 底噪）
+  06_帧率_GPU组.png        GPU 组帧率（FSR 开 vs 关）各轮 ΔT 柱状对比（含 IDLE 底噪）
 
 用法：
   python tools/charts/make_charts.py <实验数据目录> <输出目录>
@@ -23,7 +24,7 @@
 新增一条曲线：在 SERIES 里加 (颜色, 图例名)，再把条件码加进对应 chart_*() 的列表
 （条件码 = 文件名里 <机型>_ 与 _<次> 之间的部分，如 GA / GB2 / CB3）。
 
-口径：ΔT 取温度日志首末值；与 汇总实验.js 的表格（按 CSV 时长对齐）可能差 0.1℃。
+口径：ΔT 按墙钟把温度日志对齐到 CSV 的起止时刻（与 汇总实验.js 一致）。
 
 依赖：Pillow；中文字体取 C:/Windows/Fonts/msyh.ttc，缺失时回落 simhei.ttf。
 """
@@ -35,16 +36,31 @@ from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1160, 640
 ML, MR, MT, MB = 96, 300, 104, 104
-FONT = 'C:/Windows/Fonts/msyh.ttc'
-FONT_BD = 'C:/Windows/Fonts/msyhbd.ttc'
+# 中文字体候选：Windows → macOS → Linux。跨平台跑图不用改代码。
+FONT_CANDIDATES = [
+    'C:/Windows/Fonts/msyh.ttc',            # Windows 微软雅黑
+    'C:/Windows/Fonts/simhei.ttf',          # Windows 黑体
+    '/System/Library/Fonts/PingFang.ttc',   # macOS 苹方
+    '/System/Library/Fonts/STHeiti Light.ttc',
+    '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',   # Linux 文泉驿
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+]
+FONT_CANDIDATES_BD = [
+    'C:/Windows/Fonts/msyhbd.ttc',
+    'C:/Windows/Fonts/simhei.ttf',
+    '/System/Library/Fonts/PingFang.ttc',
+    '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+]
 
 SERIES = {
     'GA': ('#c0392b', 'GA 温控关（基线）'),
     'GB': ('#e67e22', 'GB 只降分辨率'),
-    'GB2': ('#8e44ad', 'GB2 分辨率+限帧20'),
+    'GB2': ('#8e44ad', 'GB2 加限帧'),
+    'GB3': ('#27ae60', 'GB3 锁帧+降分辨率'),
     'GBx': ('#95a5a6', 'GBx 旧包四档'),
     'GBF': ('#16a085', 'GBF 只降分辨率+FSR关'),
     'CA': ('#c0392b', 'CA 温控关（基线）'),
+    'CAH': ('#d35400', 'CAH CPU 重载（温控关）'),
     'CB': ('#2980b9', 'CB 只降帧率'),
     'CB2': ('#8e44ad', 'CB2 两杠杆'),
     'CB3': ('#27ae60', 'CB3 两杠杆+自动升档'),
@@ -52,11 +68,21 @@ SERIES = {
 }
 
 
+# 文件名前缀（机型码），由 main() 按机型设置：红米 K30 = redmik30，小米 15 = xiaomi15
+PREFIX = 'redmik30'
+
+
 def font(size, bold=False):
+    """按候选列表找第一个可用中文字体；全都不可用时回落到 Pillow 默认字体（emoji/中文会变方块，但不会崩）。"""
+    for path in (FONT_CANDIDATES_BD if bold else FONT_CANDIDATES):
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
     try:
-        return ImageFont.truetype(FONT_BD if bold else FONT, size)
-    except OSError:
-        return ImageFont.truetype('C:/Windows/Fonts/simhei.ttf', size)
+        return ImageFont.load_default(size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 def parse_hms(s):
@@ -187,18 +213,92 @@ def save(img, outdir, name):
     print('  写出', p)
 
 
+def _sec_of_day(hms):
+    """'15:36:53' -> 当天秒数"""
+    p = hms.strip().split(':')
+    if len(p) != 3:
+        return None
+    try:
+        return int(p[0]) * 3600 + int(p[1]) * 60 + float(p[2])
+    except ValueError:
+        return None
+
+
+def temp_at(pts, want):
+    """在 (相对秒, 温度) 序列里线性插值；pts 的相对零点由调用方保证一致"""
+    if not pts:
+        return None
+    if want <= pts[0][0]:
+        return pts[0][1]
+    if want >= pts[-1][0]:
+        return pts[-1][1]
+    for i in range(1, len(pts)):
+        if pts[i][0] >= want:
+            a, b = pts[i - 1], pts[i]
+            r = (want - a[0]) / max(1e-6, b[0] - a[0])
+            return a[1] + (b[1] - a[1]) * r
+    return pts[-1][1]
+
+
+def aligned_temp_range(datadir, cond):
+    """按墙钟把温度对齐到 CSV 的起止时刻。
+
+    温度采集常比游戏起跑早几十秒甚至几分钟（iPhone IDLE 那轮早了 218 秒），
+    直接拿温度日志的首末值会把"还没开跑"的升温算进来，ΔT 被高估。
+    CSV 有 ts_ms（设备时钟），温度日志有 HH:MM:SS（主机时钟），
+    这里用**各自的当天秒数**做插值——两者时钟一致时是对的。
+    """
+    csv_path = os.path.join(datadir, f'{PREFIX}_{cond}_1.csv')
+    tmp_path = os.path.join(datadir, f'{PREFIX}_{cond}_1_temp.csv')
+    if not (os.path.exists(csv_path) and os.path.exists(tmp_path)):
+        return None
+    ts = read_csv_cols(csv_path, ['ts_ms']).get('ts_ms') or []
+    ts = [x for x in ts if x]
+    if len(ts) < 2:
+        return None
+    pts = read_temp(tmp_path)          # [(相对秒, 温度)]，零点 = 温度日志第一条
+    if not pts:
+        return None
+    # 温度日志第一条的当天秒数：从原始文件再读一次（read_temp 只保留相对秒）
+    first_abs = None
+    with open(tmp_path, encoding='utf-8-sig') as fh:
+        for row in csv.reader(fh):
+            if len(row) >= 2:
+                s = _sec_of_day(row[0])
+                if s is not None:
+                    first_abs = s
+                    break
+    if first_abs is None:
+        return None
+    import datetime
+    def abs_of(ms):
+        dt = datetime.datetime.fromtimestamp(ms / 1000.0)
+        return dt.hour * 3600 + dt.minute * 60 + dt.second + dt.microsecond / 1e6
+    rel_start = abs_of(ts[0]) - first_abs
+    rel_end = abs_of(ts[-1]) - first_abs
+    t0 = temp_at(pts, rel_start)
+    t1 = temp_at(pts, rel_end)
+    if t0 is None or t1 is None:
+        return None
+    return t0, t1
+
+
 def chart_temp(datadir, outdir, fname, title, subtitle, conds, note):
     series = []
     for c in conds:
-        p = os.path.join(datadir, f'redmik30_{c}_1_temp.csv')
+        p = os.path.join(datadir, f'{PREFIX}_{c}_1_temp.csv')
         if not os.path.exists(p):
             print('  跳过（缺文件）', p)
             continue
         pts = read_temp(p)
         if not pts:
             continue
-        start = pts[0][1]
-        end = pts[-1][1]
+        al = aligned_temp_range(datadir, c)
+        if al:
+            start, end = al
+        else:                              # 拿不到 CSV 时间就退回首末值
+            start = pts[0][1]
+            end = pts[-1][1]
         series.append((c, pts, start, end))
     if not series:
         return
@@ -224,7 +324,7 @@ def chart_temp(datadir, outdir, fname, title, subtitle, conds, note):
 def chart_fps(datadir, outdir, fname, title, subtitle, conds, note):
     series = []
     for c in conds:
-        p = os.path.join(datadir, f'redmik30_{c}_1.csv')
+        p = os.path.join(datadir, f'{PREFIX}_{c}_1.csv')
         if not os.path.exists(p):
             continue
         d2 = read_csv_cols(p, ['elapsed_s', 'fps'])
@@ -251,7 +351,7 @@ def chart_fps(datadir, outdir, fname, title, subtitle, conds, note):
 def chart_scale(datadir, outdir, fname, title, subtitle, conds, note):
     series = []
     for c in conds:
-        p = os.path.join(datadir, f'redmik30_{c}_1.csv')
+        p = os.path.join(datadir, f'{PREFIX}_{c}_1.csv')
         if not os.path.exists(p):
             continue
         d2 = read_csv_cols(p, ['elapsed_s', 'shading_scale'])
@@ -274,7 +374,7 @@ def chart_scale(datadir, outdir, fname, title, subtitle, conds, note):
     save(img, outdir, fname)
 
 
-def chart_summary(datadir, outdir, fname, rows, note):
+def chart_summary(datadir, outdir, fname, rows, note, title, subtitle):
     """rows: [(cond, deltaT, group)]"""
     img, d = new_canvas()
     left, right = 90, W - 60
@@ -295,28 +395,106 @@ def chart_summary(datadir, outdir, fname, rows, note):
         d.text(((x0 + x1) / 2, y - 8), f'+{dt:.1f}', font=font(15, True), fill=(50, 50, 50), anchor='mb')
         d.text(((x0 + x1) / 2, bottom + 8), cond, font=font(15), fill=(60, 60, 60), anchor='ma')
         d.text(((x0 + x1) / 2, bottom + 28), group, font=font(12), fill=(150, 150, 150), anchor='ma')
-    d.text((left, 26), '温升 ΔT 汇总（红米 K30，30 分钟/轮）', font=font(25, True), fill=(30, 30, 30))
-    d.text((left, 60), '柱高 = 结束温度 − 起始温度；GA/CA 是各自负载组的基线', font=font(15), fill=(120, 120, 120))
+    d.text((left, 26), title, font=font(25, True), fill=(30, 30, 30))
+    d.text((left, 60), subtitle, font=font(15), fill=(120, 120, 120))
     d.text((left, H - 30), note, font=font(13), fill=(150, 150, 150))
     save(img, outdir, fname)
+
+
+def _delta_window(datadir, cond, minutes):
+    """取某轮温度日志「前 N 分钟」的升温（同口径对比用）。找不到返回 None。"""
+    import glob as _glob
+    pts = None
+    for p in _glob.glob(os.path.join(datadir, PREFIX + '_' + cond + '_*_temp.csv')):
+        pts = read_temp(p)
+        if pts:
+            break
+    if not pts:
+        return None
+    t0 = pts[0][0]
+    seg = [v for t, v in pts if t <= t0 + minutes * 60]
+    if len(seg) < 2:
+        return None
+    return round(seg[-1] - seg[0], 1)
 
 
 def main():
     datadir = sys.argv[1] if len(sys.argv) > 1 else '实验数据/redmik30'
     outdir = sys.argv[2] if len(sys.argv) > 2 else '报告/图'
-    print('数据目录:', datadir)
+    # 第三个参数指定机型；不填则按目录名猜
+    dev = sys.argv[3] if len(sys.argv) > 3 else ('xiaomi15' if 'xiaomi15' in datadir.replace('\\', '/').lower() else 'redmik30')
+    global PREFIX
+    PREFIX = dev
+    print('数据目录:', datadir, '| 机型:', dev, '| 文件前缀:', PREFIX)
 
+    os.makedirs(outdir, exist_ok=True)
+
+    if dev == 'xiaomi15':
+        # ---------- 小米 15 ----------
+        # GPU 组：10 分钟短轮（13 层负载下 10 分钟就到 48℃，跑满 30 分钟对主力机风险太大）
+        chart_temp(datadir, outdir, '01_温度_GPU组.png',
+                   '小米 15 · GPU 负载（13 层平面）：温度走势',
+                   '同负载、同起点，只改温控策略（GPU 组每轮 10 分钟）',
+                   ['IDLE', 'GA', 'GB', 'GBF', 'GB2', 'GB3'],
+                   '限帧是唯一的分水岭：GA/GB/GBF 三条线几乎重合，GB2（锁帧30）明显更低，GB3（锁帧+0.70）最低')
+
+        chart_temp(datadir, outdir, '02_温度_CPU组.png',
+                   '小米 15 · CPU 负载（1400 立方体）：温度走势',
+                   '轻载 49fps / 重载 40fps（cpuWorkPerCube 1000），各 30 分钟',
+                   ['IDLE', 'CA', 'CAH'],
+                   'CPU 两组几乎贴着空转线——这台机器的 CPU 负载不产生可测温升（CA/CAH 稳态 33.8/33.9℃，IDLE 34.6℃）')
+
+        chart_fps(datadir, outdir, '03_帧率_GPU组.png',
+                  '小米 15 · GPU 负载：帧率走势（5 点滑动平均）',
+                  '限帧把 60 顶到 30；不锁帧的几轮全被 vsync 压到 60',
+                  ['GA', 'GB', 'GBF', 'GB2', 'GB3'],
+                  'GB/GBF 一旦降分辨率，帧率就顶到 60；只有 GB2/GB3 的 30fps 是"锁住"的，所以它们才能降温')
+
+        chart_scale(datadir, outdir, '04_分辨率_GPU组.png',
+                    '小米 15 · GPU 负载：分辨率档位走势',
+                    '同样开温控，档位却完全不同 —— 说明降档策略在起作用',
+                    ['GA', 'GB', 'GBF', 'GB2', 'GB3'],
+                    'GA/GB2 全程 1.00；GB 到 0.70；GBF（关 FSR）只到 0.85；GB3 锁帧后手动补到 0.70')
+
+        # 同口径（前 10 分钟）温升汇总：这是本机最该先看的一张图
+        rows = []
+        for cond, group in [('IDLE', '空转'), ('CA', 'CPU轻载'), ('CAH', 'CPU重载'),
+                            ('GA', 'GPU'), ('GB', 'GPU'), ('GBF', 'GPU'), ('GB2', 'GPU'), ('GB3', 'GPU')]:
+            d = _delta_window(datadir, cond, 10)
+            if d is not None:
+                rows.append((cond, d, group))
+        if rows:
+            chart_summary(datadir, outdir, '05_温升汇总_前10分钟.png', rows,
+                          '统一取各轮「前 10 分钟」口径（GPU 组只跑了 10 分钟，CPU 组取同窗口切片）',
+                          '小米 15 · 前 10 分钟温升（统一口径）',
+                          'GPU 负载是唯一的热源：CPU 轻载/重载与空转无差别，GPU 三轮（不锁帧）接近 19℃')
+
+        # 全程温升汇总（各自时长）
+        rows2 = []
+        for cond, dt, group in [('IDLE', 5.6, '空转(30min)'), ('CA', 5.8, 'CPU(30min)'), ('CAH', 4.9, 'CPU(30min)'),
+                                ('GA', 19.1, 'GPU(10min)'), ('GB', 18.3, 'GPU(10min)'),
+                                ('GBF', 19.7, 'GPU(10min)'), ('GB2', 9.7, 'GPU(10min)'), ('GB3', 4.6, 'GPU(10min)')]:
+            rows2.append((cond, dt, group))
+        chart_summary(datadir, outdir, '06_温升汇总_全程.png', rows2,
+                      '各轮按自身时长：GPU 组 10 分钟、CPU 组 30 分钟（跨组比较请看上一张统一口径图）',
+                      '小米 15 · 全程温升（各自时长）',
+                      'GB3 只跑 10 分钟就只升 4.6℃，比空转 30 分钟的 5.6℃ 还低')
+
+        print('完成（小米 15：6 张）')
+        return
+
+    # ---------- 红米 K30 ----------
     chart_temp(datadir, outdir, '01_温度_GPU组.png',
                'GPU 负载（3 层平面）：温度走势',
                '同负载、同 30 分钟，温控关 vs 只降分辨率 vs 加限帧',
-               ['GA', 'GB', 'GB2'],
-               '起点都在 25~27℃；GA 与 GB 几乎重合 —— 只降分辨率没有降温（ΔT 取温度日志首末值，与汇总表可能差 0.1℃）')
+               ['GA', 'GB', 'GB2', 'GBF'],
+               'GA/GB 几乎重合（只降分辨率不降温）；GBF 关掉 FSR 后帧率升到 42，温度仍贴近 GB —— 帧率把省下的工作量补回来了（ΔT 已按 CSV 起止时刻对齐温度日志）')
 
     chart_temp(datadir, outdir, '02_温度_CPU组.png',
                'CPU 负载（1500 立方体）：温度走势',
                '温控关 / 只降帧率 / 两杠杆 / 两杠杆+自动升档',
                ['CA', 'CB', 'CB2', 'CB3'],
-               'CB3（绿）最低：分辨率被自动撤回、只留限帧，温升 +8.3℃（ΔT 取温度日志首末值，与汇总表可能差 0.1℃）')
+               'CB3（绿）最低：分辨率被自动撤回、只留限帧，温升 +8.1℃（ΔT 已按墙钟对齐，与汇总表一致）')
 
     chart_fps(datadir, outdir, '03_帧率_CPU组.png',
               'CPU 负载：帧率走势（5 点滑动平均）',
@@ -330,13 +508,27 @@ def main():
                 ['CB2', 'CB3'],
                 'CPU 瓶颈下降分辨率对帧率无益；CB3 的自动升档在第 85~100 秒把它撤回 1.00')
 
-    chart_summary(datadir, outdir, '05_温升汇总.png',
-                  [('GA', 14.4, 'GPU'), ('GB', 14.3, 'GPU'), ('GB2', 12.4, 'GPU'),
-                   ('CA', 10.1, 'CPU'), ('CB', 9.0, 'CPU'), ('CB2', 9.9, 'CPU'), ('CB3', 8.3, 'CPU'),
-                   ('IDLE', 6.6, '空转')],
-                  'IDLE 6.6℃ 是屏幕+微信+系统的底噪，占 GPU 组温升的 46%、CPU 组的 65%')
+    chart_fps(datadir, outdir, '06_帧率_GPU组.png',
+              'GPU 负载：帧率走势（5 点滑动平均）',
+              '同样 49% 像素：GB（FSR 开）28fps vs GBF（FSR 关）42fps',
+              ['GA', 'GB', 'GBF'],
+              'GBF 帧率比 GB 高 50%，但两者温升只差 0.7℃ —— 少画的像素被多出来的帧填回去了')
 
-    print('完成')
+    # ΔT 不再写死：直接从 CSV + 温度日志按墙钟对齐算，避免和汇总表脱节
+    def dt_of(cond):
+        al = aligned_temp_range(datadir, cond)
+        return round(al[1] - al[0], 1) if al else 0.0
+
+    chart_summary(datadir, outdir, '05_温升汇总.png',
+                  [(c, dt_of(c), g) for c, g in [
+                      ('GA', 'GPU'), ('GB', 'GPU'), ('GBF', 'GPU'), ('GB2', 'GPU'),
+                      ('CA', 'CPU'), ('CB', 'CPU'), ('CB2', 'CPU'), ('CB3', 'CPU'),
+                      ('IDLE', '空转')]],
+                  'IDLE 6.6℃ 是屏幕+微信+系统的底噪，占 GPU 组温升的 46%、CPU 组的 65%',
+                  '温升 ΔT 汇总（红米 K30，30 分钟/轮）',
+                  '柱高 = 结束温度 − 起始温度；GA/CA 是各自负载组的基线')
+
+    print('完成（红米 K30：6 张）')
 
 
 if __name__ == '__main__':
