@@ -35,7 +35,7 @@ const { ccclass, property } = _decorator;
  *    否则温控永远不动，等于白测。
  *
  * ── 常用控制台入口（运行时挂在 globalThis.stressTest 上）────────────────────
- *   GPU: setHeatPlaneCount(0~8) / setPlaneCoverage(0.05~1)
+ *   GPU: setHeatPlaneCount(0~16) / setPlaneCoverage(0.05~1)
  *   CPU: setSpawnCount(n) / setCpuWork(0~2000) / setPerCubeBaseOps(n)
  *   DRS: setScale(1|0.85|0.7) / thermalOn() / thermalOff() / thermalDown() / thermalUp()
  *   数据: exportCsv() / printCsv(n) / getStatus() / logStatus() / tintInfo()
@@ -66,7 +66,12 @@ export class StressTestController extends Component {
     @property({ type: Node, tooltip: '满屏平面模板，对应场景里面的 HeatPlane' })
     public heatPlane: Node | null = null;
 
-    @property({ range: [0, 8, 1], slide: true, tooltip: '平面层数：0 = 完全关掉 GPU 负载（平面隐藏、副本销毁）；N 层 ≈ N 倍全屏片元成本' })
+    @property({
+        range: [0, 16, 1],
+        slide: true,
+        tooltip: '平面层数：0 = 完全关掉 GPU 负载（平面隐藏、副本销毁）；N 层 ≈ N 倍全屏片元成本。'
+            + '中端机 3~5 层就打满，旗舰机（如骁龙 8 Elite）要 13 层左右才压到 50fps；上限 16',
+    })
     public heatPlaneCount: number = 1;
 
     @property({ range: [0.05, 1, 0.05], slide: true, tooltip: '单层覆盖比例（边长比，1=铺满全屏）。GPU 主旋钮是层数；这个留给"1 层都太重"时在 1 层之下做细调，像素 ∝ 比例²' })
