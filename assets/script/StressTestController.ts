@@ -1077,6 +1077,8 @@ export class StressTestController extends Component {
                 msg = '还没有数据';
             } else if (info && info.reason === 'busy') {
                 msg = '正在复制，稍等再点';
+            } else if (info && info.reason === 'cooldown') {
+                msg = '稍等 ' + (Math.ceil((info.waitMs || 1000) / 100) / 10) + ' 秒再点（系统提示还没消失）';
             } else if (info && info.reason === 'clipboard-fail') {
                 msg = '剪贴板失败：' + String(info.errMsg || '').slice(0, 20);
             } else {

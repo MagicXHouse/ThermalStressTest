@@ -1,4 +1,4 @@
-// 用 node 直接跑拆分出来的 csv-recorder：stub 掉 cc，验证 5 秒窗口 → 一行 CSV 的行为
+﻿// 用 node 直接跑拆分出来的 csv-recorder：stub 掉 cc，验证 5 秒窗口 → 一行 CSV 的行为
 const fs = require('fs');
 const path = require('path');
 const Module = require('module');
@@ -241,6 +241,7 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
     check('T09: 复制行数与数据行一致', lines1.length - 1 === r1.rows && r1.rows >= 3, 'rows=' + r1.rows);
     check('T09: 返回摘要而不是全文', r1.copied === true && typeof r1.bytes === 'number', JSON.stringify(r1));
 
+    fakeNow += 2000;   // 越过剪贴板冷却
     const r2 = rec.copyCsv(2);
     const lines2 = clip.split('\n');
     check('T09: 复制最近 2 行（仍带表头）', lines2.length === 3 && r2.rows === 2, 'lines=' + lines2.length);
@@ -275,7 +276,9 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
     check('T11: 每页都带表头', clips.length > 0 && clips[clips.length - 1].split('\n')[0].startsWith('elapsed_s,ts_ms,fps'));
 
     // 2) 游标推进
+    fakeNow += 2000;   // 越过剪贴板冷却
     const p1 = rec.copySmart();
+    fakeNow += 2000;   // 越过剪贴板冷却
     const p2 = rec.copySmart();
     check('T11: 连续两次调用推进到下一页', p2.from === p1.to + 1, p1.from + '~' + p1.to + ' → ' + p2.from);
 
@@ -288,6 +291,7 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
 
     // 4) 并发节流：第一次未回调前再调用 → busy
     let pending = null;
+    fakeNow += 2000;
     global.wx.setClipboardData = (o) => { pending = o; };   // 永远不回调 = 模拟"进行中"
     const r1 = rec.copySmart();
     const r2 = rec.copySmart((ok, info) => { failedInfo = info; });

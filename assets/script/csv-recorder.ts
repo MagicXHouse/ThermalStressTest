@@ -49,6 +49,21 @@ export class CsvRecorder {
     /** 剪贴板调用进行中（避免连点并发导致 fail） */
     private _clipBusy = false;
 
+    /**
+     * 两次剪贴板调用之间的最小间隔（毫秒）。
+     *
+     * 真机现象：**第一次复制成功、第二次立刻失败**。
+     * 原因不是数据问题，而是 wx.setClipboardData 会弹一个"内容已复制"的系统 toast，
+     * toast 未消失前再次调用会被判失败（部分机型/版本 1~2 秒）。
+     * 冷却期内直接给提示，不发请求——比发出去再失败清楚得多。
+     */
+    public static readonly COPY_COOLDOWN_MS = 1200;
+
+    private _clipLastAt = 0;
+
+    /** 失败自动重试一次（冷却 400ms 后），只在"疑似瞬时失败"时用 */
+    public static readonly COPY_RETRY_DELAY_MS = 400;
+
     /** 分页复制的游标（1 基数据行；复制成功后推进，末页回卷到 1） */
     private _copyCursor = 1;
 
@@ -235,7 +250,7 @@ export class CsvRecorder {
      * 剪贴板唯一写入口：节流（并发直接拒绝）+ 统一日志 + 失败原因提示。
      * @returns 是否真的发起了调用（false = 无 wx / 正忙）
      */
-    private _writeClipboard (text: string, meta: any, cb?: (ok: boolean, info: any) => void): boolean {
+    private _writeClipboard (text: string, meta: any, cb?: (ok: boolean, info: any) => void, isRetry = false): boolean {
         const wx = this._getWx();
         if (!wx || typeof wx.setClipboardData !== 'function') {
             console.log('[StressTest][csv] ' + text);
@@ -248,11 +263,22 @@ export class CsvRecorder {
             cb?.(false, Object.assign({ reason: 'busy' }, meta));
             return false;
         }
+        // 冷却：系统 toast 还没消失时再调会被判失败（"第一次成功、第二次失败"就是这个）
+        const nowMs = performance.now();
+        const since = nowMs - this._clipLastAt;
+        if (!isRetry && this._clipLastAt > 0 && since < CsvRecorder.COPY_COOLDOWN_MS) {
+            const waitMs = CsvRecorder.COPY_COOLDOWN_MS - since;
+            console.warn('[StressTest] 距上次复制只有 ' + Math.round(since) + 'ms（系统提示未消失），'
+                + Math.round(waitMs) + 'ms 后再试');
+            cb?.(false, Object.assign({ reason: 'cooldown', waitMs }, meta));
+            return false;
+        }
         this._clipBusy = true;
         wx.setClipboardData({
             data: text,
             success: () => {
                 this._clipBusy = false;
+                this._clipLastAt = performance.now();
                 console.log('[StressTest] 已复制到剪贴板：' + (meta.rows || 0) + ' 行 / ' + text.length + ' 字节'
                     + (meta.page ? '（第 ' + meta.page + '/' + meta.pages + ' 页）' : ''));
                 cb?.(true, meta);
@@ -260,6 +286,16 @@ export class CsvRecorder {
             fail: (e: any) => {
                 this._clipBusy = false;
                 const errMsg = (e && e.errMsg) ? String(e.errMsg) : 'unknown';
+                // 失败自动重试一次：多数瞬时失败（toast 未消失 / 系统忙）重试就能过
+                if (!isRetry && typeof setTimeout === 'function') {
+                    console.warn('[StressTest] 复制失败（' + errMsg + '），'
+                        + CsvRecorder.COPY_RETRY_DELAY_MS + 'ms 后自动重试一次');
+                    setTimeout(() => {
+                        this._writeClipboard(text, meta, cb, true);
+                    }, CsvRecorder.COPY_RETRY_DELAY_MS);
+                    return;
+                }
+                this._clipLastAt = performance.now();
                 console.warn('[StressTest] 复制到剪贴板失败: ' + errMsg
                     + '（' + (meta.rows || 0) + ' 行 / ' + text.length + ' 字节）');
                 console.warn('[StressTest] 常见原因：① 单次数据过大（>16KB 请用分页 copynext）'
