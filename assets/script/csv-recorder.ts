@@ -38,6 +38,21 @@ export class CsvRecorder {
     public static readonly COPY_PAGE_SIZE = 120;
 
     /**
+     * 单次剪贴板调用的安全上限（字节）。
+     *
+     * 实测：30 分钟数据约 27KB，整份复制在部分机型/版本上会直接
+     * `setClipboardData:fail`（或虽成功但粘出来被截断）。
+     * 12~16KB/次是稳定区间，所以超过这个量就自动分页。
+     */
+    public static readonly COPY_SAFE_BYTES = 16 * 1024;
+
+    /** 剪贴板调用进行中（避免连点并发导致 fail） */
+    private _clipBusy = false;
+
+    /** 分页复制的游标（1 基数据行；复制成功后推进，末页回卷到 1） */
+    private _copyCursor = 1;
+
+    /**
      * 掉帧判据的容差系数（1.05 = 允许超出预算 5%）。
      *
      * 为什么必须有：判据原来是 `frames[i] > budget`，而 budget = 1000 / game.frameRate，
@@ -201,34 +216,112 @@ export class CsvRecorder {
         // 体积经验值：约 78 字节/行 → 30 分钟 ≈ 27KB、1 小时 ≈ 55KB。
         // 没有官方文档给出 wx.setClipboardData 的硬上限，这里按"明显过大就别指望剪贴板"给个软阈值：
         // 超过就仍然复制（不改用户意图），但回一句 warn 引导改用 export / copy:N。
-        const LARGE_BYTES = 256 * 1024;
-        const warn = bytes > LARGE_BYTES ? 'large' : undefined;
-        if (warn) {
-            console.warn('[StressTest] CSV 体积偏大（' + Math.round(bytes / 1024) + 'KB），剪贴板可能失败；'
-                + '建议改用 s(\'export\') 导出文件，或 s(\'copy:200\') 只复制最近 200 行');
+        // 整份太大时不再硬塞剪贴板（真机上就是 fail 的主因），直接转成分页复制第一页
+        const tooLarge = lastN === 0 && bytes > CsvRecorder.COPY_SAFE_BYTES;
+        if (tooLarge) {
+            console.warn('[StressTest] 整份 ' + Math.round(bytes / 1024) + 'KB 超过安全上限 '
+                + Math.round(CsvRecorder.COPY_SAFE_BYTES / 1024) + 'KB，自动改为分页复制（每次一页）');
+            return this.copySmart(cb);
         }
+
+        const requested = this._writeClipboard(text, { rows, bytes, span }, cb);
+        if (!requested) {
+            return { copied: false, reason: 'no-wx-clipboard', rows, bytes, span };
+        }
+        return { copied: true, rows, bytes, span };
+    }
+
+    /**
+     * 剪贴板唯一写入口：节流（并发直接拒绝）+ 统一日志 + 失败原因提示。
+     * @returns 是否真的发起了调用（false = 无 wx / 正忙）
+     */
+    private _writeClipboard (text: string, meta: any, cb?: (ok: boolean, info: any) => void): boolean {
         const wx = this._getWx();
-
-        if (wx && typeof wx.setClipboardData === 'function') {
-            wx.setClipboardData({
-                data: text,
-                success: () => {
-                    console.log('[StressTest] CSV 已复制到剪贴板：' + rows + ' 行 / ' + bytes + ' 字节');
-                    cb?.(true, { rows, bytes, span, warn });
-                },
-                fail: (e: any) => {
-                    const errMsg = (e && e.errMsg) ? String(e.errMsg) : 'unknown';
-                    console.warn('[StressTest] 复制到剪贴板失败: ' + errMsg);
-                    cb?.(false, { reason: 'clipboard-fail', errMsg, rows, bytes });
-                },
-            });
-            return { copied: true, rows, bytes, span, warn };
+        if (!wx || typeof wx.setClipboardData !== 'function') {
+            console.log('[StressTest][csv] ' + text);
+            cb?.(false, Object.assign({ reason: 'no-wx-clipboard' }, meta));
+            return false;
         }
+        if (this._clipBusy) {
+            // 连点/多入口同时触发：上一次还没回调，直接再调大概率 fail
+            console.warn('[StressTest] 上一次剪贴板操作还没结束，本次忽略（稍等半秒再点）');
+            cb?.(false, Object.assign({ reason: 'busy' }, meta));
+            return false;
+        }
+        this._clipBusy = true;
+        wx.setClipboardData({
+            data: text,
+            success: () => {
+                this._clipBusy = false;
+                console.log('[StressTest] 已复制到剪贴板：' + (meta.rows || 0) + ' 行 / ' + text.length + ' 字节'
+                    + (meta.page ? '（第 ' + meta.page + '/' + meta.pages + ' 页）' : ''));
+                cb?.(true, meta);
+            },
+            fail: (e: any) => {
+                this._clipBusy = false;
+                const errMsg = (e && e.errMsg) ? String(e.errMsg) : 'unknown';
+                console.warn('[StressTest] 复制到剪贴板失败: ' + errMsg
+                    + '（' + (meta.rows || 0) + ' 行 / ' + text.length + ' 字节）');
+                console.warn('[StressTest] 常见原因：① 单次数据过大（>16KB 请用分页 copynext）'
+                    + ' ② 连点导致并发 ③ 命令通道不在用户手势内（用屏幕按钮更稳）'
+                    + ' ④ 该机型/模拟器不支持剪贴板。兜底请用 s(\'export\') + adb 拉文件');
+                cb?.(false, Object.assign({ reason: 'clipboard-fail', errMsg }, meta));
+            },
+        });
+        return true;
+    }
 
-        // 非微信（编辑器预览 / 单测）：退回打印，浏览器里可以手动复制
-        console.log('[StressTest][csv] ' + text);
-        cb?.(false, { reason: 'no-wx-clipboard', rows, bytes });
-        return { copied: false, reason: 'no-wx-clipboard', rows, bytes, span, warn };
+    /** 把 [from..to] 收缩到安全字节内，返回实际结束行 */
+    private _fitRowsToSafeBytes (from: number, to: number, maxBytes: number): number {
+        let end = to;
+        while (end > from) {
+            const out = [this._rows[0]].concat(this._rows.slice(from, end + 1));
+            if (out.join('\n').length <= maxBytes) {
+                return end;
+            }
+            end--;
+        }
+        return from;
+    }
+
+    /**
+     * 分页复制（"复制CSV"按钮用这个）。
+     *
+     * 每次只复制一页（默认 120 行、且不超过 16KB），复制成功后游标推进；
+     * 到末页后下一次回到第 1 页。这样**永远不会因为太大而 fail**，
+     * 现场也清楚"现在拿到的是第几页"。
+     */
+    public copySmart (cb?: (ok: boolean, info: any) => void): any {
+        const total = this._rows.length - 1;
+        if (total <= 0) {
+            console.warn('[StressTest] 还没有 CSV 数据');
+            cb?.(false, { reason: 'no-data' });
+            return { copied: false, reason: 'no-data' };
+        }
+        const from = Math.min(Math.max(1, this._copyCursor), total);
+        let to = Math.min(from + CsvRecorder.COPY_PAGE_SIZE - 1, total);
+        to = this._fitRowsToSafeBytes(from, to, CsvRecorder.COPY_SAFE_BYTES);
+
+        const out = [this._rows[0]].concat(this._rows.slice(from, to + 1));
+        const text = out.join('\n');
+        const rows = to - from + 1;
+        const pages = Math.max(1, Math.ceil(total / CsvRecorder.COPY_PAGE_SIZE));
+        const page = Math.floor((from - 1) / CsvRecorder.COPY_PAGE_SIZE) + 1;
+        const atLastPage = to >= total;
+
+        const requested = this._writeClipboard(text, { rows, bytes: text.length, page, pages, from, to, total, atLastPage },
+            (ok: boolean, info: any) => {
+                if (ok) {
+                    this._copyCursor = atLastPage ? 1 : to + 1;
+                }
+                cb?.(ok, info);
+            });
+
+        return {
+            copied: requested, requested, rows, bytes: text.length,
+            page, pages, from, to, total, atLastPage,
+            next: atLastPage ? 1 : to + 1,
+        };
     }
 
     /** 分页信息：总行数、每页行数、总页数（30 分钟约 356 行 = 3 页） */
@@ -259,17 +352,15 @@ export class CsvRecorder {
         const text = out.join('\n');
         const rows = tt - f + 1;
         const bytes = text.length;
-        const wx = this._getWx();
-        if (wx && typeof wx.setClipboardData === 'function') {
-            wx.setClipboardData({
-                data: text,
-                success: () => console.log('[StressTest] 已复制第 ' + f + '~' + tt + ' 行（' + rows + ' 行 / ' + bytes + ' 字节）'),
-                fail: (e: any) => console.warn('[StressTest] 复制失败: ' + (e && e.errMsg)),
-            });
-            return { copied: true, from: f, to: tt, rows, total, bytes };
+        // 走统一入口：同样受 16KB 安全阈值与并发节流保护
+        if (bytes > CsvRecorder.COPY_SAFE_BYTES) {
+            const tight = this._fitRowsToSafeBytes(f, tt, CsvRecorder.COPY_SAFE_BYTES);
+            console.warn('[StressTest] 该区间 ' + Math.round(bytes / 1024) + 'KB 超安全上限，截到第 '
+                + f + '~' + tight + ' 行');
+            return this.copyRange(f, tight);
         }
-        console.log('[StressTest][csv] ' + text);
-        return { copied: false, reason: 'no-wx-clipboard', from: f, to: tt, rows, total, bytes };
+        const requested = this._writeClipboard(text, { from: f, to: tt, rows, total, bytes });
+        return { copied: requested, requested, from: f, to: tt, rows, total, bytes };
     }
 
     /**

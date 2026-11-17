@@ -1,4 +1,4 @@
-import {
+﻿import {
     _decorator, Component, Node, Prefab, profiler, Enum,
     Label, Camera,
     director, game, thermal, cclegacy,
@@ -795,6 +795,7 @@ export class StressTestController extends Component {
             case 'mem': return this.memSnapshot();
             case 'export': return this.exportCsv();
             case 'copy': return this.copyCsvRange(arg);
+            case 'copynext': return this.copyCsvNext();
             case 'copypage': return this.copyCsvPage(num);
             case 'csvpages': return this.csv.pageInfo();
             case 'clean': return this.cleanOldCsv();
@@ -941,7 +942,15 @@ export class StressTestController extends Component {
         if (m) return this.csv.copyRange(Number(m[1]), Number(m[2]));
         const n = Number(arg);
         if (arg && Number.isFinite(n) && n > 0) return this.csv.copyCsv(n);
-        return this.csv.copyCsv(0);
+        // 无参数 = 整份 → 改成分页（整份约 27KB，在真机上就是 setClipboardData:fail 的主因）
+        console.warn('[StressTest] 命令通道不在用户手势内，剪贴板失败率更高；'
+            + '建议直接用屏幕上的「复制CSV」按钮（它已改成分页）。这里先复制当前页');
+        return this.csv.copySmart();
+    }
+
+    /** copynext —— 复制下一页（配合分页使用） */
+    private copyCsvNext(): any {
+        return this.csv.copySmart();
     }
 
     /**
@@ -1053,23 +1062,34 @@ export class StressTestController extends Component {
      * 之所以统一到一个方法：面板、按钮、命令三处调用行为必须一致，否则排查时对不上。
      */
     public onCopyCsvClick(): void {
-        // 剪贴板是**异步**的：以前同步返回就提示"已复制"，setClipboardData 失败也照样提示成功，
-        // 现场分不清是"复制失败"还是"按钮没点到"。这里改成等真实结果再提示。
+        // 剪贴板是**异步**的：等真实结果再提示，分不清"复制失败"和"按钮没点到"的问题已经修过。
+        // 现在再进一步：**每点一次只复制一页**（≤120 行且 ≤16KB）。
+        // 整份 30 分钟数据约 27KB，一次性塞进去在部分机型上会 setClipboardData:fail；
+        // 分页后永远不会因为太大而失败，而且现场知道"现在是第几页"。
         this._showCopyTip('复制中…');
-        this.copyCsv(0, undefined, (ok: boolean, info: any) => {
+        const r = this.csv.copySmart((ok: boolean, info: any) => {
             let msg: string;
             if (ok) {
-                msg = '已复制 ' + info.rows + ' 行（' + Math.round(info.span || 0) + 's）';
+                msg = '已复制第 ' + info.page + '/' + info.pages + ' 页（' + info.rows + ' 行，'
+                    + Math.round((info.bytes || 0) / 1024) + 'KB）'
+                    + (info.atLastPage ? '｜已到末页，下次从第 1 页开始' : '｜再点一次复制下一页');
             } else if (info && info.reason === 'no-data') {
                 msg = '还没有数据';
+            } else if (info && info.reason === 'busy') {
+                msg = '正在复制，稍等再点';
             } else if (info && info.reason === 'clipboard-fail') {
-                msg = '剪贴板失败：' + String(info.errMsg || '').slice(0, 24);
+                msg = '剪贴板失败：' + String(info.errMsg || '').slice(0, 20);
             } else {
                 msg = '复制失败（仅微信小游戏支持）';
             }
             this._showCopyTip(msg);
             console.log('[StressTest] ' + msg);
         });
+        // 同步回执也打一份，便于从 Console 判断有没有真的发起调用
+        if (r && r.rows) {
+            console.log('[StressTest] 复制第 ' + r.page + '/' + r.pages + ' 页：第 ' + r.from + '~' + r.to
+                + ' 行，' + r.bytes + ' 字节' + (r.requested ? '' : '（未发起，见上面的原因）'));
+        }
     }
 
     /** 现场提示：屏幕上的 copyTipLabel + 系统 toast 同时给，iOS 上哪个能用就用哪个 */

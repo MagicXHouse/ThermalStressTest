@@ -248,6 +248,56 @@ check('重新 start 后行数回到 1（表头）', rec.rowCount === 1, 'rows=' 
     delete global.wx;
 }
 
+
+// --- T11：分页复制（copySmart）——修复 setClipboardData:fail 的核心 ---
+{
+    let clips = [];
+    let failNext = false;
+    global.wx = {
+        env: { USER_DATA_PATH: '/vfs' },
+        setClipboardData: (o) => {
+            if (failNext) { failNext = false; o.fail && o.fail({ errMsg: 'setClipboardData:fail data too large' }); return; }
+            clips.push(o.data); o.success && o.success();
+        },
+    };
+    const rec = new CsvRecorder({ writeCsv: true, planes: { count: 1 }, cubes: { count: 0 },
+        enableThermalControl: false, isThermalActive: () => false, _log: () => { } });
+    rec.start();
+    // 跑到 ~30 分钟（每 5 秒一行 → 约 360 行 ≈ 27KB，必须超过 16KB 安全阈值）
+    for (let x = 0; x < 1800000; x += 16) { fakeNow += 16; rec.tick(); }
+
+    // 1) 整份远超安全阈值时，copyCsv() 自动转分页
+    const all = rec.copyCsv();
+    check('T11: 整份超过安全阈值 → 自动分页', all.page >= 1 && all.rows <= CsvRecorder.COPY_PAGE_SIZE,
+        'page=' + all.page + ' rows=' + all.rows);
+    check('T11: 单页字节数不超安全上限', all.bytes <= CsvRecorder.COPY_SAFE_BYTES,
+        all.bytes + ' <= ' + CsvRecorder.COPY_SAFE_BYTES);
+    check('T11: 每页都带表头', clips.length > 0 && clips[clips.length - 1].split('\n')[0].startsWith('elapsed_s,ts_ms,fps'));
+
+    // 2) 游标推进
+    const p1 = rec.copySmart();
+    const p2 = rec.copySmart();
+    check('T11: 连续两次调用推进到下一页', p2.from === p1.to + 1, p1.from + '~' + p1.to + ' → ' + p2.from);
+
+    // 3) 失败时不推进游标，且回调收到 clipboard-fail
+    let failedInfo = null;
+    failNext = true;
+    const before = rec.copySmart();
+    const after = rec.copySmart();
+    check('T11: 复制失败不推进游标', before.from === after.from, before.from + ' vs ' + after.from);
+
+    // 4) 并发节流：第一次未回调前再调用 → busy
+    let pending = null;
+    global.wx.setClipboardData = (o) => { pending = o; };   // 永远不回调 = 模拟"进行中"
+    const r1 = rec.copySmart();
+    const r2 = rec.copySmart((ok, info) => { failedInfo = info; });
+    check('T11: 进行中再次调用被拒绝（busy）', r2.requested === false && failedInfo && failedInfo.reason === 'busy',
+        JSON.stringify(failedInfo));
+    if (pending && pending.success) pending.success();      // 收尾，避免影响后续用例
+
+    delete global.wx;
+}
+
 // --- T10：启动清理会删掉全部 thermal_*（避免多轮重进后文件堆积），但不动别的文件 ---
 {
     const unlinked = [];
