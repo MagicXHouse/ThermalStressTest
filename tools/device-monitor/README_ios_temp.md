@@ -54,7 +54,7 @@ iOS 没有 adb，苹果也没有开放任何读电池/CPU 温度的公开 API。
     -Interval    采样间隔秒数，默认 5（单次读取实测约 0.5 秒）
     -Csv         CSV 路径，默认 temp_log_ios.csv
     -MaxSamples  采够多少条退出，0 为一直采
-    -Fresh       清空重建 CSV；默认是追加
+    -Fresh       清空重建 CSV。**笔记：.bat 现在默认就带 -Fresh**（见下方"每次开跑自动清空"）
     -Diag        诊断模式，导出 ios_diag.txt
     -Deep        多试两个更慢的入口
     -Raw         打印底层原始返回
@@ -71,6 +71,20 @@ iOS 没有 adb，苹果也没有开放任何读电池/CPU 温度的公开 API。
 画图：
 
     把 plot_temp.py 里的 CSV_FILE 改成 "temp_log_ios.csv"，然后 python plot_temp.py
+
+## 每次开跑自动清空（与安卓版一致）
+
+安卓版 `monitor_temp.bat` 每次启动第一件事就是 `echo Time,Temperature> temp_log.csv`，
+把上一轮的数据丢掉。`monitor_temp_ios.bat` 现在行为一致：**默认自动带 `-Fresh`**，
+每轮开始都会重建 CSV、只留表头 —— 避免两轮数据混进同一个文件
+（上一轮的尾巴温度会污染下一轮的起始温度，dT 直接算错）。
+
+想接着上一条曲线继续采（很少用）：
+
+```bat
+set KEEP_PREV=1
+monitor_temp_ios.bat -Csv D:\logs\ios.csv
+```
 
 ## 为什么不用 idevicediagnostics
 
