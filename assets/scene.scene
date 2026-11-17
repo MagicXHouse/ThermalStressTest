@@ -346,7 +346,8 @@
       "__expectedType__": "cc.Prefab"
     },
     "spawnRadius": 20,
-    "spawnCount": 0,
+    "targetFrameRate": 60,
+  "spawnCount": 1000,
     "rotationSpeed": 90,
     "orbitSpeed": 10,
     "cpuWorkPerCube": 0,

@@ -148,6 +148,14 @@ export class StressTestController extends Component {
     @property({ tooltip: '生成半径' })
     public spawnRadius: number = 20;
 
+    @property({
+        range: [10, 60, 1],
+        slide: true,
+        tooltip: '启动时直接设 game.frameRate（默认 60）。iOS 真机没法敲命令，'
+            + '靠它做"空场景 20fps"这类实验：验证温度上限是绝对的，还是"工作量降到够低就会掉"',
+    })
+    public targetFrameRate = 60;
+
     @property({ tooltip: '立方体数量：0 = 场景 A（纯 GPU，每帧零遍历）；>0 = 场景 B（CPU 负载，每帧 O(N) 遍历）' })
     public spawnCount: number = 0;
 
@@ -217,6 +225,16 @@ export class StressTestController extends Component {
 
     /** 绑定两条滑块（CPU 数量 / GPU 层数）并把引用解析成实际节点 */
     onLoad() {
+        // 帧率天花板最先设：温控建控制器时会读 game.frameRate 当"天花板"，
+        // 晚设会让档位表按旧值生成。
+        // iOS 真机没有 console，这个面板值就是唯一能改帧率上限的入口
+        // （用来做"空场景 20fps"这类实验）。
+        if (this.targetFrameRate > 0) {
+            game.frameRate = this.targetFrameRate;
+            console.log('[StressTest] targetFrameRate = ' + this.targetFrameRate
+                + '（readback ' + game.frameRate + '）');
+        }
+
         this.csv = new CsvRecorder(this);
         this.planes = new HeatPlaneRig(this);
         this.thermalBridge = new ThermalBridge(this);
