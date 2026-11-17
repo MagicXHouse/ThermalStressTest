@@ -908,7 +908,9 @@ export class StressTestController extends Component {
      * 把 CSV 复制到剪贴板，返回摘要 `{copied, rows, bytes}`。
      * @param lastN 只要最近 N 行；0 = 全部
      */
-    public copyCsv(lastN: number = 0): any { return this.csv.copyCsv(lastN); }
+    public copyCsv(lastN: number = 0, _unused?: any, cb?: (ok: boolean, info: any) => void): any {
+        return this.csv.copyCsv(lastN, cb);
+    }
 
     /**
      * 复制命令的统一解析：
@@ -1033,13 +1035,27 @@ export class StressTestController extends Component {
      * 之所以统一到一个方法：面板、按钮、命令三处调用行为必须一致，否则排查时对不上。
      */
     public onCopyCsvClick(): void {
-        const r = this.copyCsv(0);
-        let msg = '复制失败（仅微信小游戏支持）';
-        if (r && r.copied) {
-            // 带上时长：一眼能核对"复制到的数据覆盖了多久"，也是 H-02 的现场判据
-            msg = '已复制 ' + r.rows + ' 行（' + Math.round(r.span || 0) + 's）';
-        } else if (r && r.reason === 'no-data') msg = '还没有数据';
+        // 剪贴板是**异步**的：以前同步返回就提示"已复制"，setClipboardData 失败也照样提示成功，
+        // 现场分不清是"复制失败"还是"按钮没点到"。这里改成等真实结果再提示。
+        this._showCopyTip('复制中…');
+        this.copyCsv(0, undefined, (ok: boolean, info: any) => {
+            let msg: string;
+            if (ok) {
+                msg = '已复制 ' + info.rows + ' 行（' + Math.round(info.span || 0) + 's）';
+            } else if (info && info.reason === 'no-data') {
+                msg = '还没有数据';
+            } else if (info && info.reason === 'clipboard-fail') {
+                msg = '剪贴板失败：' + String(info.errMsg || '').slice(0, 24);
+            } else {
+                msg = '复制失败（仅微信小游戏支持）';
+            }
+            this._showCopyTip(msg);
+            console.log('[StressTest] ' + msg);
+        });
+    }
 
+    /** 现场提示：屏幕上的 copyTipLabel + 系统 toast 同时给，iOS 上哪个能用就用哪个 */
+    private _showCopyTip(msg: string): void {
         if (this.copyTipLabel) {
             this.copyTipLabel.string = msg;
             this.unschedule(this._clearCopyTip);
@@ -1050,7 +1066,6 @@ export class StressTestController extends Component {
         if (wx && typeof wx.showToast === 'function') {
             try { wx.showToast({ title: msg, icon: 'none', duration: 1500 }); } catch (e) { /* ignore */ }
         }
-        console.log('[StressTest] ' + msg);
     }
 
     /** 2 秒后清空提示文字（保持引用稳定，才能被 unschedule 找到） */

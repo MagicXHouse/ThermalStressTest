@@ -31,7 +31,10 @@ export class CopyCsvButton {
 
         const W = 168;
         const H = 76;
-        const M = 24;
+        // 底部边距 24 → 60：iPhone 底部有 Home Indicator（安全区约 34pt），
+        // 24 时按钮下沿正好落在系统手势区里，点击被系统截走 ——
+        // 表现就是"按钮看得见、点不动、复制没反应"（iOS 真机实测）。
+        const M = 60;
 
         const node = new Node('CopyCsvButton');
         node.layer = Layers.Enum.UI_2D;

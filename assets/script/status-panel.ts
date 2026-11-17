@@ -37,7 +37,9 @@ export class StatusPanel {
         const W = 250;
         const H = 52;
         const GAP = 6;
-        const M = 20;
+        // 必须与 copy-csv-button.ts 的底部边距保持一致（那里是 60）：
+        // 面板叠在按钮正上方，按钮上移了面板也要跟着上移，否则会压住按钮。
+        const M = 60;
         const ROWS = 4;
 
         const root = new Node('StatusPanel');

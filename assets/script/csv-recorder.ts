@@ -171,10 +171,17 @@ export class CsvRecorder {
      * @param lastN 只要最近 N 行；0 = 全部。数据量建议：≤200 行走剪贴板，
      *              更长用 {@link exportCsv}（文件更适合 30 分钟长测）。
      */
-    public copyCsv (lastN: number = 0): any {
+    /**
+     * @param lastN 只复制最近 N 行（0 = 全部）
+     * @param cb    可选的完成回调：**剪贴板是异步的**，只有在这里才能拿到真实结果。
+     *              以前同步返回 copied=true，即使 setClipboardData 失败也会提示"已复制"，
+     *              现场根本分不清"复制成功"还是"按钮没点到"。
+     */
+    public copyCsv (lastN: number = 0, cb?: (ok: boolean, info: any) => void): any {
         const total = this._rows.length;
         if (total <= 1) {
             console.warn('[StressTest] 还没有 CSV 数据');
+            cb?.(false, { reason: 'no-data' });
             return { copied: false, reason: 'no-data' };
         }
         let out: string[];
@@ -205,14 +212,22 @@ export class CsvRecorder {
         if (wx && typeof wx.setClipboardData === 'function') {
             wx.setClipboardData({
                 data: text,
-                success: () => console.log('[StressTest] CSV 已复制到剪贴板：' + rows + ' 行 / ' + bytes + ' 字节'),
-                fail: (e: any) => console.warn('[StressTest] 复制到剪贴板失败: ' + (e && e.errMsg)),
+                success: () => {
+                    console.log('[StressTest] CSV 已复制到剪贴板：' + rows + ' 行 / ' + bytes + ' 字节');
+                    cb?.(true, { rows, bytes, span, warn });
+                },
+                fail: (e: any) => {
+                    const errMsg = (e && e.errMsg) ? String(e.errMsg) : 'unknown';
+                    console.warn('[StressTest] 复制到剪贴板失败: ' + errMsg);
+                    cb?.(false, { reason: 'clipboard-fail', errMsg, rows, bytes });
+                },
             });
             return { copied: true, rows, bytes, span, warn };
         }
 
         // 非微信（编辑器预览 / 单测）：退回打印，浏览器里可以手动复制
         console.log('[StressTest][csv] ' + text);
+        cb?.(false, { reason: 'no-wx-clipboard', rows, bytes });
         return { copied: false, reason: 'no-wx-clipboard', rows, bytes, span, warn };
     }
 
