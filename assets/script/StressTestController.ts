@@ -117,6 +117,9 @@ export class StressTestController extends Component {
     @property({ tooltip: '降档触发阈值(%)：60fps 目标下 10% ⇒ 实测低于 54.5fps 才降档' })
     public thermalTriggerPercent: number = 10;
 
+    @property({ tooltip: '分辨率档位梯度（逗号分隔，降序）。填 "0.7" = 只有 1.00→0.70 两档；留空 = 引擎默认三档 1.00/0.85/0.70' })
+    public thermalScaleTiersText: string = '';
+
     @property({ tooltip: '分辨率地板：档位为 1.00 / 0.85 / 本值（默认三档 1.00 / 0.85 / 0.70）' })
     public thermalMinScale: number = 0.7;
 

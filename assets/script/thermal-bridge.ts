@@ -84,6 +84,21 @@ export class ThermalBridge {
      * 触发条件：20s 滑动窗口的平均帧时间 ≥ 预算 × (1 + triggerPercent%)；
      * 另外前 thermalWarmupSeconds 秒是预热期，不会动作也不计入 CSV。
      */
+    /** 把 "0.7" / "0.85,0.7" 解析成数字数组；空或非法 → undefined（用引擎默认） */
+    private static _parseTiers (text: string): number[] | undefined {
+        if (!text || !String(text).trim()) return undefined;
+        const arr = String(text).split(/[,\s]+/)
+            .map((s) => Number(s))
+            .filter((v) => Number.isFinite(v) && v > 0 && v < 1)
+            .sort((x, y) => y - x);
+        if (!arr.length) {
+            console.warn('[StressTest] thermalScaleTiersText="' + text + '" 解析不出合法档位（应形如 0.85,0.7），改用引擎默认');
+            return undefined;
+        }
+        console.log('[StressTest] 分辨率档位梯度 = 1.00 / ' + arr.join(' / '));
+        return arr;
+    }
+
     public on (): void {
         const c = this._ctrl;
         const th = thermalApi();
@@ -96,6 +111,9 @@ export class ThermalBridge {
             minFrameRate: c.thermalMinFrameRate,
             triggerPercent: c.thermalTriggerPercent,
             minScale: c.thermalMinScale,
+            // 分辨率档位梯度：面板填 "0.7" 就只做 1.00 → 0.70 两档（跳过 0.85）。
+            // 留空则不下发，引擎用默认 [0.85, 0.7]。
+            scaleTiers: ThermalBridge._parseTiers(c.thermalScaleTiersText),
             warmupSeconds: c.thermalWarmupSeconds,
             enableAutoUpgrade: c.enableAutoUpgrade,
             probeIntervalSeconds: c.probeIntervalSeconds,
