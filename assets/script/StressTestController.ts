@@ -798,7 +798,6 @@ export class StressTestController extends Component {
             case 'mem': return this.memSnapshot();
             case 'export': return this.exportCsv();
             case 'copy': return this.copyCsvRange(arg);
-            case 'copynext': return this.copyCsvNext();
             case 'copypage': return this.copyCsvPage(num);
             case 'csvpages': return this.csv.pageInfo();
             case 'clean': return this.cleanOldCsv();
@@ -930,9 +929,7 @@ export class StressTestController extends Component {
      * 把 CSV 复制到剪贴板，返回摘要 `{copied, rows, bytes}`。
      * @param lastN 只要最近 N 行；0 = 全部
      */
-    public copyCsv(lastN: number = 0, _unused?: any, cb?: (ok: boolean, info: any) => void): any {
-        return this.csv.copyCsv(lastN, cb);
-    }
+    public copyCsv(lastN: number = 0): any { return this.csv.copyCsv(lastN); }
 
     /**
      * 复制命令的统一解析：
@@ -945,15 +942,7 @@ export class StressTestController extends Component {
         if (m) return this.csv.copyRange(Number(m[1]), Number(m[2]));
         const n = Number(arg);
         if (arg && Number.isFinite(n) && n > 0) return this.csv.copyCsv(n);
-        // 无参数 = 整份 → 改成分页（整份约 27KB，在真机上就是 setClipboardData:fail 的主因）
-        console.warn('[StressTest] 命令通道不在用户手势内，剪贴板失败率更高；'
-            + '建议直接用屏幕上的「复制CSV」按钮（它已改成分页）。这里先复制当前页');
-        return this.csv.copySmart();
-    }
-
-    /** copynext —— 复制下一页（配合分页使用） */
-    private copyCsvNext(): any {
-        return this.csv.copySmart();
+        return this.csv.copyCsv(0);
     }
 
     /**
@@ -1065,40 +1054,13 @@ export class StressTestController extends Component {
      * 之所以统一到一个方法：面板、按钮、命令三处调用行为必须一致，否则排查时对不上。
      */
     public onCopyCsvClick(): void {
-        // 剪贴板是**异步**的：等真实结果再提示，分不清"复制失败"和"按钮没点到"的问题已经修过。
-        // 现在再进一步：**每点一次只复制一页**（≤120 行且 ≤16KB）。
-        // 整份 30 分钟数据约 27KB，一次性塞进去在部分机型上会 setClipboardData:fail；
-        // 分页后永远不会因为太大而失败，而且现场知道"现在是第几页"。
-        this._showCopyTip('复制中…');
-        const r = this.csv.copySmart((ok: boolean, info: any) => {
-            let msg: string;
-            if (ok) {
-                msg = '已复制第 ' + info.page + '/' + info.pages + ' 页（' + info.rows + ' 行，'
-                    + Math.round((info.bytes || 0) / 1024) + 'KB）'
-                    + (info.atLastPage ? '｜已到末页，下次从第 1 页开始' : '｜再点一次复制下一页');
-            } else if (info && info.reason === 'no-data') {
-                msg = '还没有数据';
-            } else if (info && info.reason === 'busy') {
-                msg = '正在复制，稍等再点';
-            } else if (info && info.reason === 'cooldown') {
-                msg = '稍等 ' + (Math.ceil((info.waitMs || 1000) / 100) / 10) + ' 秒再点（系统提示还没消失）';
-            } else if (info && info.reason === 'clipboard-fail') {
-                msg = '剪贴板失败：' + String(info.errMsg || '').slice(0, 20);
-            } else {
-                msg = '复制失败（仅微信小游戏支持）';
-            }
-            this._showCopyTip(msg);
-            console.log('[StressTest] ' + msg);
-        });
-        // 同步回执也打一份，便于从 Console 判断有没有真的发起调用
-        if (r && r.rows) {
-            console.log('[StressTest] 复制第 ' + r.page + '/' + r.pages + ' 页：第 ' + r.from + '~' + r.to
-                + ' 行，' + r.bytes + ' 字节' + (r.requested ? '' : '（未发起，见上面的原因）'));
-        }
-    }
+        const r = this.copyCsv(0);
+        let msg = '复制失败（仅微信小游戏支持）';
+        if (r && r.copied) {
+            // 带上时长：一眼能核对"复制到的数据覆盖了多久"，也是 H-02 的现场判据
+            msg = '已复制 ' + r.rows + ' 行（' + Math.round(r.span || 0) + 's）';
+        } else if (r && r.reason === 'no-data') msg = '还没有数据';
 
-    /** 现场提示：屏幕上的 copyTipLabel + 系统 toast 同时给，iOS 上哪个能用就用哪个 */
-    private _showCopyTip(msg: string): void {
         if (this.copyTipLabel) {
             this.copyTipLabel.string = msg;
             this.unschedule(this._clearCopyTip);
@@ -1109,7 +1071,9 @@ export class StressTestController extends Component {
         if (wx && typeof wx.showToast === 'function') {
             try { wx.showToast({ title: msg, icon: 'none', duration: 1500 }); } catch (e) { /* ignore */ }
         }
+        console.log('[StressTest] ' + msg);
     }
+
 
     /** 2 秒后清空提示文字（保持引用稳定，才能被 unschedule 找到） */
     private _clearCopyTip = (): void => {

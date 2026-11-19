@@ -95,6 +95,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data', default=r'C:\Users\Administrator\Desktop\温控一期测试\正式AB实验\实验数据\apple17')
     ap.add_argument('--out', default=r'C:\Users\Administrator\Desktop\温控一期测试\正式AB实验\图_苹果17')
+    ap.add_argument('--prefix', default='iphone17', help='数据文件名前缀，如 iphone17 / iphone13')
+    ap.add_argument('--title', default='苹果 17', help='标题里的机型名')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -102,11 +104,11 @@ def main():
     fig, ax = plt.subplots(figsize=(11.5, 6.6), dpi=130)
     ends = []
     for cond, label, color, lw in SERIES:
-        tpath = os.path.join(args.data, 'iphone17_%s_1_temp.csv' % cond)
+        tpath = os.path.join(args.data, args.prefix + '_%s_1_temp.csv' % cond)
         if not os.path.exists(tpath):
             print('  跳过（缺温度日志）', cond)
             continue
-        cpath = os.path.join(args.data, 'iphone17_%s_1.csv' % cond)
+        cpath = os.path.join(args.data, args.prefix + '_%s_1.csv' % cond)
         pts = read_temp(tpath)
         if not pts:
             continue
@@ -136,7 +138,7 @@ def main():
     ax.set_ylim(24, 45)
     ax.set_xlabel('起跑后分钟数', fontsize=12)
     ax.set_ylabel('机身（电池）温度 ℃', fontsize=12)
-    ax.set_title('苹果 17 · 各负载场景的升温曲线对比', fontsize=15, fontweight='bold', pad=14)
+    ax.set_title(args.title + ' · 各负载场景的升温曲线对比', fontsize=15, fontweight='bold', pad=14)
     ax.xaxis.set_major_locator(MultipleLocator(5))
     ax.yaxis.set_major_locator(MultipleLocator(2))
     ax.grid(True, color='#ecf0f1', linewidth=1.0)
@@ -146,12 +148,12 @@ def main():
     ax.legend(loc='upper left', frameon=True, fontsize=10.5, framealpha=0.95)
 
     fig.text(0.5, 0.045,
-             '数据：iPhone 17 · 屏幕亮度 10% · 全程插线 · 各轮起点 26~28℃'
+             '数据：' + args.title + ' · 屏幕亮度 10% · 全程插线 · 各轮起点 26~28℃'
              '（CA / WXONLY 无主数据 CSV，按温度日志起点对齐）\n'
              '结论：六条曲线中段最大只差约 2℃，25 分钟后全部收敛到 42.7~42.8℃',
              ha='center', fontsize=10, color='#555555')
 
-    out = os.path.join(args.out, '01_苹果17_温度对比_各负载.png')
+    out = os.path.join(args.out, '01_' + args.title + '_温度对比_各负载.png')
     fig.tight_layout(rect=(0, 0.10, 1, 1))
     fig.savefig(out)
     print('\n写出:', out)
