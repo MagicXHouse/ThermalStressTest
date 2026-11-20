@@ -9,13 +9,13 @@ rem i.e. a nested-quote command line, plus parsing of "temperature: 240".
 rem Doing that in batch is fragile; the PowerShell script already handles it
 rem (including zone selection and NA on failure), so keep one implementation.
 rem
-rem Behaviour matches monitor_temp.bat (Android): every run starts a NEW file
-rem (the script truncates and rewrites the Time,Temperature header). A silent
-rem append would let two rounds share one file and poison the second round's
-rem dT baseline with the first round's tail temperature.
+rem Output naming: when the caller does not pass -Out, the script names the file
+rem   temp_log_<yyyyMMdd_HHmm>.csv
+rem Timestamped by design -- a fixed default name silently overwrites the
+rem previous round (that already cost us one round of temperature data).
 rem
 rem Usage:
-rem   monitor_temp_harmony.bat                        (5s interval, temp_log_harmony.csv)
+rem   monitor_temp_harmony.bat                                  (5s interval, auto name)
 rem   monitor_temp_harmony.bat -Interval 2 -Out run1.csv
 rem   monitor_temp_harmony.bat -Source thermal -Zone shell_back -Out body.csv
 rem   monitor_temp_harmony.bat -HdcPath "C:\path\to\hdc.exe"
@@ -66,17 +66,12 @@ for %%P in (hdc.exe) do if "%%~$PATH:P"=="" (
   )
 )
 
-rem --- default output file, unless caller supplied -Out ------------------------
-set "OUT_ARG="
-echo %* | findstr /i /c:"-Out" >nul
-if errorlevel 1 set "OUT_ARG=-Out temp_log_harmony.csv"
-
 echo HarmonyOS temperature sampler
 if defined HDC_EXE echo   hdc: %HDC_EXE%
-echo   Ctrl+C to stop; a new CSV is created on every run.
+echo   Ctrl+C to stop. Output file is timestamped unless -Out is given.
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0monitor_temp_harmony.ps1" %OUT_ARG% %HDC_ARG% %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0monitor_temp_harmony.ps1" %HDC_ARG% %*
 
 if errorlevel 1 (
   echo.

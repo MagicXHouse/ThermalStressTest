@@ -98,6 +98,25 @@ monitor_temp_harmony.bat -HdcPath "C:\path\to\hdc.exe"
 **口径约定**：主指标一律用 **BatteryService 的 battery temperature**，
 `shell_back` / `system_h` 只作为辅助证据，不要混进主表。
 
+## 三·五、兜底：从控制台回滚恢复温度数据
+
+> 鸿蒙 NEXT 上应用沙箱读不到，**唯一可靠的"副本"是采集脚本打到控制台的那一行行输出**
+> （每个采样点打印 `# 12  16:24:10.82  33.0 ℃`）。文件被误删或覆盖时，可以从窗口回滚里还原。
+
+步骤：
+
+1. PowerShell 窗口里 **右键 → 全选 → 回车**（或 `Ctrl+A` 后 `Ctrl+C`），粘贴到一个文本文件，例如 `console.txt`；
+2. 用时间窗把本轮切出来（控制台里往往混着前几轮的输出）：
+
+```powershell
+.\parse_console_temp.ps1 -In console.txt -Out recovered.csv -Since 16:14:00 -Until 16:50:00
+
+# 前半段从控制台恢复 + 后半段从还在写的文件里拿，按时间戳去重排序
+.\parse_console_temp.ps1 -In console.txt -Out merged.csv -Since 16:14:00 -Merge temp_log_harmony.csv
+```
+
+`NA（读不到）` 的行会被自动跳过。
+
 ## 四、注意：CSV 取不回来
 
 NEXT 的 shell 读不到应用沙箱，三条路都 `Permission denied`：

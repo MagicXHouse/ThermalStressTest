@@ -17,7 +17,7 @@
 #   .\monitor_temp_harmony.ps1 -Out ... -Source thermal -Zone shell_back
 #   .\monitor_temp_harmony.ps1 -Out ... -Quiet          # 只写文件，不打印
 param(
-    [Parameter(Mandatory = $true)][string]$Out,
+    [string]$Out = '',
     [int]$Interval = 5,
     [ValidateSet('battery', 'thermal')][string]$Source = 'battery',
     [string]$Zone = '',
@@ -77,6 +77,12 @@ if ($Source -eq 'thermal' -and -not $Zone) {
     }
     if (-not $Zone) { $Zone = ($zones.Keys | Select-Object -First 1) }
     Write-Host ("自动选用 zone: " + $Zone + " = " + $zones[$Zone].ToString('0.0') + " ℃")
+}
+
+# 没给 -Out 就按时间戳自动命名 —— 防止忘传参数时把上一轮的数据覆盖掉
+if (-not $Out) {
+    $Out = 'temp_log_' + (Get-Date).ToString('yyyyMMdd_HHmm') + '.csv'
+    Write-Host ("未指定 -Out，自动命名: " + $Out)
 }
 
 $dir = Split-Path -Parent $Out
