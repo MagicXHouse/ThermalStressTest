@@ -60,6 +60,19 @@ hdc list targets     # 设备号；出现 Unauthorized 说明手机没授权
 
 ## 三、采温度
 
+**双击（或命令行）用 .bat 最省事**（自动找 hdc、自动给默认输出文件）：
+
+```
+monitor_temp_harmony.bat                                  :: 5 秒一次 -> temp_log_harmony.csv
+monitor_temp_harmony.bat -Interval 2 -Out run1.csv
+monitor_temp_harmony.bat -Source thermal -Zone shell_back -Out body.csv
+monitor_temp_harmony.bat -HdcPath "C:\path\to\hdc.exe"
+```
+
+每次运行都会**新建 CSV**（不是追加）——避免上一轮的尾部温度污染下一轮的 ΔT 基线。
+
+也可以直接调 PowerShell：
+
 ```powershell
 # 主口径：电池温度（与 Android 的 dumpsys battery 同单位、同物理量）
 .\monitor_temp_harmony.ps1 -Out .\temp_log.csv -Interval 5

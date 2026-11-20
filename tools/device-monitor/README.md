@@ -34,15 +34,17 @@ monitor_temp_ios.bat
 
 ## 鸿蒙（HarmonyOS NEXT）
 
-`
+```
 probe_harmony_temp.ps1      # 先探测：型号/系统/温度通道/沙箱是否可读
-monitor_temp_harmony.ps1    # 采温度（默认 BatteryService，与 Android 同口径）
-`
+monitor_temp_harmony.bat    # 采温度（双击即可，自动找 hdc；默认 5s -> temp_log_harmony.csv）
+monitor_temp_harmony.ps1    # 上面 .bat 调的就是它（参数更全）
+```
 
-- 依赖 **hdc**（华为 Command Line Tools 里的 hdc.exe），**不是 adb** —— NEXT 上 db devices 永远为空；
-- 温度来自 hidumper -s BatteryService -a '-i'（单位 0.1℃，与其它机型可直接比）；
-  另有 -Source thermal 可采 8 个传感器（shell_back 机身、system_h SoC）；
-- 详见 **README_harmony_temp.md**（含实测输出、坑与"CSV 取不回来"的说明）。
+- 依赖 **`hdc`**（华为 Command Line Tools 里的 `hdc.exe`），**不是 adb** —— NEXT 上 `adb devices` 永远为空；
+- 温度来自 `hidumper -s BatteryService -a '-i'`（单位 0.1℃，与其它机型可直接比）；
+  另有 `-Source thermal` 可采 8 个传感器（`shell_back` 机身、`system_h` SoC）；
+- 每次运行都会**新建 CSV**（不追加），避免上一轮尾部温度污染下一轮 ΔT 基线；
+- 详见 **`README_harmony_temp.md`**（含实测输出、坑与"CSV 取不回来"的说明）。
 
 ## 画温度曲线
 
