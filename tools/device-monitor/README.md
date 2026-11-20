@@ -43,7 +43,7 @@ monitor_temp_harmony.ps1    # 上面 .bat 调的就是它（参数更全）
 - 依赖 **`hdc`**（华为 Command Line Tools 里的 `hdc.exe`），**不是 adb** —— NEXT 上 `adb devices` 永远为空；
 - 温度来自 `hidumper -s BatteryService -a '-i'`（单位 0.1℃，与其它机型可直接比）；
   另有 `-Source thermal` 可采 8 个传感器（`shell_back` 机身、`system_h` SoC）；
-- 每次运行都会**新建 CSV**（不追加），避免上一轮尾部温度污染下一轮 ΔT 基线；
+- 每次运行**先删旧文件**再写表头，且**每个采样点都打印到控制台**（`# 1 12:04:01 23.0 ℃`）；
 - 详见 **`README_harmony_temp.md`**（含实测输出、坑与"CSV 取不回来"的说明）。
 
 ## 画温度曲线

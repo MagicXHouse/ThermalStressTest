@@ -69,9 +69,16 @@ monitor_temp_harmony.bat -Source thermal -Zone shell_back -Out body.csv
 monitor_temp_harmony.bat -HdcPath "C:\path\to\hdc.exe"
 ```
 
-每次运行都会**新建 CSV**（不是追加）——避免上一轮的尾部温度污染下一轮的 ΔT 基线。
+运行时的行为：
 
-也可以直接调 PowerShell：
+| 行为 | 说明 |
+| :-- | :-- |
+| **先删旧文件** | 启动时若目标 CSV 已存在，先 `Remove-Item` 再写表头，并打印「已删除旧文件」——避免两轮数据混在一个文件里污染 ΔT 基线 |
+| **每个点都打印** | 控制台逐行输出 `#  1  12:04:01.72  23.0 ℃`，一眼能看出在跑还是卡住 |
+| **读不到就写 NA** | 不沿用上一次的读数（沿用会让数据看起来平滑，实际是假的） |
+| **连续 3 次 NA 告警** | 提示检查 hdc 连接与手机授权 |
+
+也可以直接调 PowerShell（参数更全，含 `-Quiet` 只写文件不打印）：
 
 ```powershell
 # 主口径：电池温度（与 Android 的 dumpsys battery 同单位、同物理量）
@@ -80,6 +87,9 @@ monitor_temp_harmony.bat -HdcPath "C:\path\to\hdc.exe"
 # 辅助：机身背面 / SoC
 .\monitor_temp_harmony.ps1 -Out .\temp_log_shell.csv -Interval 5 -Source thermal -Zone shell_back
 .\monitor_temp_harmony.ps1 -Out .\temp_log_soc.csv   -Interval 5 -Source thermal -Zone system_h
+
+# 后台/批处理用：只写文件，不刷屏
+.\monitor_temp_harmony.ps1 -Out .\temp_log.csv -Quiet
 ```
 
 输出格式与 Android 版一致：`Time,Temperature`，5 秒一行 —— 现有的
