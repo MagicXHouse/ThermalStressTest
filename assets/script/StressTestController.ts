@@ -1,4 +1,4 @@
-﻿import {
+import {
     _decorator, Component, Node, Prefab, profiler, Enum,
     Label, Camera,
     director, game, thermal, cclegacy,
@@ -125,6 +125,18 @@ export class StressTestController extends Component {
 
     @property({ tooltip: '温控预热时长（秒），会传给 thermal.warmupSeconds；同时作为"延后开始采样"的时长，避免预热期污染 baseline' })
     public thermalWarmupSeconds: number = 20;
+
+    /**
+     * 采样开始后 N 秒，自动执行一次降档（0 = 关闭）。
+     *
+     * 用途：`先限帧、再降画质`（GBFR）这类实验要在"第 10 分钟"手动敲 `s('down')`，
+     * 但鸿蒙上扫码重进游戏后微信开发者工具的命令通道会断，敲不了命令。
+     * 把它设成 600，就等于在采样第 600 秒自动点一次降档。
+     *
+     * 默认 0 = 完全不生效，对现有轮次零影响。
+     */
+    @property({ tooltip: '采样开始后 N 秒自动执行一次降档（0 = 关闭）。用于无法手动敲命令的场合（如鸿蒙扫码后命令通道断开）' })
+    public autoDownAtSeconds: number = 0;
 
     @property({ tooltip: '降分辨率时是否开 FSR 升采样。关掉 = 纯降采样（更清晰度差但更省 GPU）；真机上若 FSR 开销盖过降采样收益，勾掉它' })
     public enableFsr: boolean = true;
@@ -331,6 +343,21 @@ export class StressTestController extends Component {
                 }
                 // A/B 验证：每 N 秒切一次 DRS（默认开，验收长测时关掉）
                 if (this.autoToggleDrs) this.startDrsToggle();
+
+                // 定时自动降档（默认 0 = 关闭）：给"无法手动敲命令"的场合用，例如鸿蒙扫码后命令通道断开。
+                if (this.autoDownAtSeconds > 0) {
+                    console.log('[StressTest] 已安排 t=' + this.autoDownAtSeconds + 's 自动降档一次');
+                    this.scheduleOnce(() => {
+                        const ok = this.thermalDown();
+                        const st: any = this.getStatus();
+                        console.log('[StressTest][AUTODOWN] t=' + this.autoDownAtSeconds + 's down → ' + (ok ? 'success' : 'failed')
+                            + ' | shadingScale=' + st.shadingScale + ' thermalScale=' + st.thermalScale
+                            + ' rate=' + st.frameRate + ' level=' + st.thermalLevel);
+                        this._log('[AUTODOWN] t=' + this.autoDownAtSeconds + 's down=' + (ok ? 'ok' : 'fail')
+                            + ' shadingScale=' + st.shadingScale + ' thermalScale=' + st.thermalScale
+                            + ' rate=' + st.frameRate + ' level=' + st.thermalLevel);
+                    }, this.autoDownAtSeconds);
+                }
             };
 
             if (this.enableThermalControl && this.thermalWarmupSeconds > 0) {
@@ -705,6 +732,25 @@ export class StressTestController extends Component {
     public setFsrMinScale(minScale: number): void { this.thermalBridge.setFsrMinScale(minScale); }
 
     /**
+     * 立方体自转速度（度/秒）。`s('rot:0')` 让它停住 —— **截图对比画质时用**，
+     * 画面静止才好同机位对比。**不影响负载**：`animate()` 里的浮点计算照跑，只是不转。
+     */
+    public setRotationSpeed (speed: number): number {
+        this.rotationSpeed = Number.isFinite(speed) ? speed : 0;
+        console.log('[StressTest] rotationSpeed = ' + this.rotationSpeed + ' 度/秒'
+            + (this.rotationSpeed === 0 ? '（立方体已静止）' : ''));
+        return this.rotationSpeed;
+    }
+
+    /** 立方体公转速度（度/秒）。`s('orbit:0')` 停住。同样不影响负载计算 */
+    public setOrbitSpeed (speed: number): number {
+        this.orbitSpeed = Number.isFinite(speed) ? speed : 0;
+        console.log('[StressTest] orbitSpeed = ' + this.orbitSpeed + ' 度/秒'
+            + (this.orbitSpeed === 0 ? '（公转已停）' : ''));
+        return this.orbitSpeed;
+    }
+
+    /**
      * 运行时切换降档顺序（`'scale-first'` / `'frameRate-first'`，也接受面板枚举 0/1），不需要重新构建。
      * 只影响之后的降档；已经降过的档不会回滚。
      */
@@ -824,13 +870,15 @@ export class StressTestController extends Component {
                 return this.thermalBridge.leverScope();
             case 'fsr': return this.setFsrEnabled(arg !== 'off' && arg !== '0' && arg !== 'false');
             case 'fsrmin': return this.setFsrMinScale(num);
+            case 'rot': case 'spin': return this.setRotationSpeed(num);
+            case 'orbit': return this.setOrbitSpeed(num);
             case 'diag': return this.diagFsr();
             case 'diagplane': return this.diagPlane();
             case 'log': return this.logStatus();
             default:
                 console.warn('[StressTest] 未知命令: ' + raw
                     + '；可用：down/up/on/off/status/print/level/diag/diagplane/log, '
-                    + 'spawn:/planes:/scale:/fps:/trigger:/cpu:/base:/order:/fsr:/fsrmin:');
+                    + 'spawn:/planes:/scale:/fps:/trigger:/cpu:/base:/order:/fsr:/fsrmin:/rot:/orbit:');
         }
     }
 
