@@ -372,13 +372,16 @@ export class StressTestController extends Component {
         });
 
         (globalThis as any).stressTest = this;
-        console.log('[StressTest] attached to globalThis.stressTest');
+        // web 控制台更短的入口：stressCmd('scale:0.7')
+        (globalThis as any).stressCmd = (c: string): any => this.execCommand(String(c || ''));
+        console.log('[StressTest] attached to globalThis.stressTest（web 也可以用 stressCmd(\'scale:0.7\')）');
         console.log('  A/GPU: setHeatPlaneCount(1~8) 改叠层数 | setPlaneCoverage(0~1) 改单层面积');
         console.log('  B/CPU: setSpawnCount(n) | setCpuWork(0~2000) | setPerCubeBaseOps(n)');
         console.log('  drs  : startDrsToggle() | stopDrsToggle() | setScale(1|0.85|0.7) | thermalOn() | thermalOff()');
         console.log('  diag : diagFsr() | diagPlane() | getStatus() | logStatus() | exportCsv() | printCsv(n)');
-        console.log('  命令通道（控制台看不到 stressTest 时用这个，微信任意上下文都行）:');
-        console.log('    wx.setStorageSync(\'__stressCmd\', \'down\') / \'up\' / \'status\' / \'spawn:1500\' / \'scale:0.6\'');
+        console.log('  命令通道（控制台看不到 stressTest 时用这个）:');
+        console.log('    微信: wx.setStorageSync(\'__stressCmd\', \'down\')');
+        console.log('    web : localStorage.setItem(\'__stressCmd\', \'down\')  或直接 stressCmd(\'down\')');
 
         // 真机拿不到 performance.memory，只剩"内存告警"这个弱信号（level 5/10/15）。
         // 长测里如果频繁告警，说明内存在涨 —— 作为 J-03 的真机旁证。
@@ -781,19 +784,26 @@ export class StressTestController extends Component {
         this._cmdAccum = 0;
 
         const g: any = globalThis as any;
+
+        // 通道 1（微信小游戏）：wx.setStorageSync('__stressCmd', 'scale:0.7')
+        // 通道 2（web 预览/正式版）：localStorage.setItem('__stressCmd', 'scale:0.7')
+        // 两者都走"读一次就删"，避免同一条命令被执行两轮。
         const wxApi: any = g.wx;
-        if (!wxApi || typeof wxApi.getStorageSync !== 'function') return;
+        const ls: any = !(wxApi && typeof wxApi.getStorageSync === 'function') ? g.localStorage : null;
 
         let cmd = '';
         try {
-            cmd = String(wxApi.getStorageSync(StressTestController.CMD_KEY) || '');
+            if (wxApi && typeof wxApi.getStorageSync === 'function') {
+                cmd = String(wxApi.getStorageSync(StressTestController.CMD_KEY) || '');
+                if (cmd) wxApi.removeStorageSync(StressTestController.CMD_KEY);
+            } else if (ls && typeof ls.getItem === 'function') {
+                cmd = String(ls.getItem(StressTestController.CMD_KEY) || '');
+                if (cmd) ls.removeItem(StressTestController.CMD_KEY);
+            }
         } catch (e) {
             return;
         }
         if (!cmd) return;
-        try {
-            wxApi.removeStorageSync(StressTestController.CMD_KEY);
-        } catch (e) { /* 清不掉也没关系，下次会再执行一次 */ }
 
         try {
             const result = this.execCommand(cmd);
