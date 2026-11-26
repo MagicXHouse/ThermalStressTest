@@ -55,6 +55,9 @@ export class StressTestController extends Component {
     @property({ tooltip: '帧率温控开关：勾选=允许降帧率。CPU 负载实验（只开立方体）用这个' })
     public enableFrameRateControl: boolean = true;
 
+    @property({ tooltip: '用「基准档 + 降档阶梯 + onApply 回调」驱动降档（验证回调链路用），默认关' })
+    public useTierLadder: boolean = false;
+
     @property({ tooltip: '是否把 CSV 结果写入手机文件' })
     public writeCsv: boolean = true;
 
@@ -328,6 +331,9 @@ export class StressTestController extends Component {
                 // 反过来的话 applyLeverSwitches() 只写进 config，随后的 enable(cfg) 会覆盖它。
                 this.thermalOn();
                 this.applyLeverSwitches();
+                // 必须在 thermalOn() 之后：enable 之前设的阶梯会变成 pending，
+                // stepDown() 走旧的逐杠杆路径，onApply 一次都不会触发。
+                if (this.useTierLadder) this.installTierLadder();
             } else {
                 console.log('[StressTest] thermal OFF (enableThermalControl = false)');
                 console.log('[StressTest] 温控关：分辨率/帧率杠杆都不会生效（状态面板显示为「—」）');
@@ -404,6 +410,48 @@ export class StressTestController extends Component {
         this.thermalBridge.setLeverScope(scope);
         console.log('[StressTest] 温控杠杆：分辨率=' + (scale ? '开' : '关')
             + '、帧率=' + (fps ? '开' : '关') + '（' + scope + '）');
+    }
+
+    /**
+     * 装一条 3 档阶梯，每档的 onApply 改业务负载（直接改立方体数量）。
+     *
+     * 这是**回调链路的验证载体**，不是产品逻辑：
+     *   - 把"业务负载"做成肉眼可见（立方体变少）
+     *   - 每次回调打一行固定格式的日志，方便和真机日志 / CSV 对齐
+     *
+     * 顺序要求在 thermalOn() 之后（见调用处注释）。
+     */
+    private installTierLadder(): void {
+        const total = this.cubes.count;
+        if (total <= 0) {
+            console.warn('[StressTest] 立方体为 0，阶梯回调没有业务载体（先把 spawnCount 调大）');
+        }
+        const apply = (ctx: any, ratio: number): void => {
+            // 走 setSpawnCount 而不是直接 cubes.generate()：
+            //   - 它会把 spawnCount 属性和滑块一起更新（面板/滑块不再停在旧值上）
+            //   - 立方体数量 = 真实负载，getStatus / CSV 的 spawn_count 天然对得上
+            // 代价：这一帧要销毁+重建节点，ft_max 会出现一个尖峰（真机上更明显）。
+            const n = Math.round(total * ratio);
+            // 数量没变就不重建：启动时 base 档会立刻回调一次，此时已经是 1300 了，
+            // 重建等于白白卡一帧。
+            if (this.cubes.count !== n) {
+                this.setSpawnCount(n);
+            }
+            console.log('[TIER] onApply idx=' + ctx.index + ' prev=' + ctx.previous
+                + ' reason=' + ctx.reason + ' cubes=' + this.cubes.count);
+            this._log('[TIER] idx=' + ctx.index + ' prev=' + ctx.previous
+                + ' reason=' + ctx.reason + ' cubes=' + this.cubes.count);
+        };
+        const ok = this.thermalBridge.setLadder([
+            { scale: 0.85, onApply: (ctx: any) => apply(ctx, 0.6) },
+            { frameRate: 30, scale: 0.70, onApply: (ctx: any) => apply(ctx, 0.3) },
+        ], {
+            frameRate: 60,
+            scale: 1.0,
+            onApply: (ctx: any) => apply(ctx, 1.0),
+        });
+        console.log('[StressTest] 阶梯安装 ' + (ok ? '成功' : '失败')
+            + '；档数=' + this.thermalBridge.ladderLength() + '；当前档=' + this.thermalBridge.getTier());
     }
 
     /** 内存告警计数（真机 J-03 的旁证） */
@@ -949,6 +997,8 @@ export class StressTestController extends Component {
             /** 采样期间被丢弃的"长间隔"个数（切后台/断点）；S-04 判据用 */
             csvGaps: this.csv.gaps,
             thermalOn: this.enableThermalControl,
+            /** 当前档位索引（0 = base；-1 = 阶梯不可用） */
+            tier: this.thermalBridge.getTier(),
             /** 运行时的实际状态（thermalOff 之后为 false，与面板开关无关） */
             thermalActive: this.thermalBridge.isActive(),
             /** 内存告警累计次数（真机 J-03 旁证；devtools 里一般是 0） */

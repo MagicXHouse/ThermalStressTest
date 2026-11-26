@@ -206,6 +206,56 @@ export class ThermalBridge {
     }
 
     /**
+     * 设置降档阶梯（含每档的 onApply 回调）。
+     *
+     * 顺序要求：必须在 `thermal.enable()` **之后**调用。enable 之前设的阶梯会被存成
+     * pending，`stepDown()` 会走旧的逐杠杆路径，回调一次都不会触发。
+     *
+     * @param tiers 用户档位数组，**从索引 1 开始**（索引 0 恒等于 base）
+     * @param base  基准档（省略 = 引擎按当前运行时状态快照）
+     * @returns 是否真的调用成功（模块被裁剪 / 引擎过旧时为 false）
+     */
+    public setLadder (tiers: any[], base?: any): boolean {
+        const th = thermalApi();
+        if (!th || typeof th.setDowngradeLadder !== 'function') {
+            console.warn('[StressTest] setDowngradeLadder 不可用（thermal 模块被裁剪，或引擎未重新编译）');
+            return false;
+        }
+        try {
+            th.setDowngradeLadder(tiers, base ? { base } : undefined);
+            return true;
+        } catch (e) {
+            console.warn('[StressTest] setDowngradeLadder 抛异常：' + String(e));
+            return false;
+        }
+    }
+
+    /** 当前档位索引（0 = base）；不可用时返回 -1 */
+    public getTier (): number {
+        const th = thermalApi();
+        if (!th || typeof th.getTier !== 'function') return -1;
+        try {
+            const v = Number(th.getTier());
+            // 引擎返回 undefined / 非数字时 Number() 会给 NaN —— 别让 NaN 流到状态面板和 CSV 上
+            return Number.isFinite(v) ? v : -1;
+        } catch (e) {
+            return -1;
+        }
+    }
+
+    /** 当前阶梯有几档（含 base）；不可用时返回 0 */
+    public ladderLength (): number {
+        const th = thermalApi();
+        if (!th || typeof th.getDowngradeLadder !== 'function') return 0;
+        try {
+            const list = th.getDowngradeLadder();
+            return Array.isArray(list) ? list.length : 0;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    /**
      * 温控**当前是否真的处于 enabled 状态**（与面板开关 `enableThermalControl` 无关）。
      * 面板管的是"这个包构建时要不要开"，这里问的是"运行时现在开着没有"——
      * `thermalOff()` 之后就是 false，哪怕面板还是勾着的。
